@@ -351,8 +351,8 @@ Param (
         "Importing GPO: $($GPMBackup.GPODisplayName)"
         try {
             Import-GPO -Domain $DestDomain -Server $DestServer -BackupGpoName $GPMBackup.GPODisplayName -TargetName $GPMBackup.GPODisplayName -Path $BackupPath -MigrationTable $MigTablePath -CreateIfNeeded
-            Set-GPPermissions -Domain $DestDomain -Server $DestServer -Name $GPMBackup.GPODisplayName -PermissionLevel ‘GPOread’ -TargetName ‘Authenticated Users’ -TargetType Group -Replace -Confirm: $false
-		          Set-GPPermissions -Domain $DestDomain -Server $DestServer -Name $GPMBackup.GPODisplayName -PermissionLevel ‘GPOread’ -TargetName ‘Domain Computers’ -TargetType Group -Replace -Confirm: $false		
+            Set-GPPermissions -Domain $DestDomain -Server $DestServer -Name $GPMBackup.GPODisplayName -PermissionLevel 'GPOread' -TargetName 'Authenticated Users' -TargetType Group -Replace -Confirm: $false
+		          Set-GPPermissions -Domain $DestDomain -Server $DestServer -Name $GPMBackup.GPODisplayName -PermissionLevel 'GPOread' -TargetName 'Domain Computers' -TargetType Group -Replace -Confirm: $false		
         }
         catch {
             If ($_.Exception.ToString().Contains('0x8007000D')) {
@@ -538,7 +538,7 @@ Param (
             $MigID = $MigTable | Where-Object {$_.SourceName -eq $ACE.IDName}
             
             # If entry, then attempt to set it
-            If ($MigID -and $MigID.Type -ne “Unknown”) {
+            If ($MigID -and $MigID.Type -ne "Unknown") {
                 # Find the AD object based on the type listed in the MigTable
                 $ADObject = $null
 
