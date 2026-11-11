@@ -35,6 +35,15 @@ Original repository: https://github.com/GoateePFE/GPOMigration
 - If your own migration table CSV (`MigTable*.csv`) contains non-ASCII names,
   save it as UTF-8.
 
+### Maintenance
+- `Call-GPOExport.ps1`, `Call-GPOImport.ps1` and `GPOMigration.psd1` converted from
+  UTF-16 to UTF-8 with BOM, like the module itself. Git and GitHub now show their
+  changes line by line.
+- Typographic quotes (`‘ ’ “ ”`) in module code replaced with plain `'` and `"`.
+  They came from copying code out of a web page and only worked while the file
+  kept its BOM.
+- Added `.gitattributes`: CRLF line endings for PowerShell, XML, CSV and Markdown files.
+
 ## 1.1-fork - 2020-11-27
 
 Changes to `GPOMigration/GPOMigration.psm1` based on reader comments under the

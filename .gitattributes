@@ -1,0 +1,11 @@
+# Line endings: PowerShell and Windows tools expect CRLF in the working tree.
+# Git stores these files with LF and converts them on checkout.
+*.ps1   text eol=crlf
+*.psm1  text eol=crlf
+*.psd1  text eol=crlf
+*.xml   text eol=crlf
+*.csv   text eol=crlf
+*.md    text eol=crlf
+
+# Encoding: all PowerShell files in this repo are UTF-8 with BOM.
+# Windows PowerShell 5.1 reads a file without BOM as ANSI, so keep the BOM.
