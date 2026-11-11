@@ -73,12 +73,12 @@ Param(
 
     # Backup WMI filters
     If ($All) {
-        $WMIFilterNames = Get-GPO -All |
+        $WMIFilterNames = Get-GPO -All -Domain $SrceDomain -Server $SrceServer |
             Where-Object {$_.WmiFilter} |
             Select-Object -ExpandProperty WmiFilter |
             Select-Object -ExpandProperty Name -Unique
     } Else {
-        $WMIFilterNames = Get-GPO -All |
+        $WMIFilterNames = Get-GPO -All -Domain $SrceDomain -Server $SrceServer |
             Where-Object {$DisplayName -contains $_.DisplayName -and $_.WmiFilter} |
             Select-Object -ExpandProperty WmiFilter |
             Select-Object -ExpandProperty Name -Unique
@@ -126,7 +126,7 @@ Param(
     ForEach ($Name in $DisplayName) {
         $GPO = Get-GPO -Server $SrceServer -Domain $SrceDomain -Name $Name
         # Using the NTSecurityDescriptor attribute instead of calling Get-ACL
-        $ACL = (Get-ADObject -Identity $GPO.Path -Properties NTSecurityDescriptor |
+        $ACL = (Get-ADObject -Server $SrceServer -Identity $GPO.Path -Properties NTSecurityDescriptor |
             Select-Object -ExpandProperty NTSecurityDescriptor).Access
 
         $GPO_ACEs += $ACL | Select-Object `
@@ -518,6 +518,11 @@ Param (
     IDName              * : Enterprise Admins
     IDDomain            * : WINGTIPTOYS
     #>
+    # The default AD: drive points at the domain of the logged-on user.
+    # Map a drive to the destination DC so Set-Acl writes to the right domain.
+    # The drive is local to this function and disappears when it returns.
+    New-PSDrive -Name GPOMigDest -PSProvider ActiveDirectory -Root '//RootDSE/' -Server $DestServer | Out-Null
+
     ForEach ($Name in $DisplayName) {
 
         "Importing GPO Permissions: $Name"
@@ -557,7 +562,7 @@ Param (
 
                     "Found ADObject $($ADObject.Name). Writing permission."
                     # Same effect as using Get-ACL "AD:\..."
-                    $acl = $GPO | Select-Object -ExpandProperty Path | Get-ADObject -Properties NTSecurityDescriptor | Select-Object -ExpandProperty NTSecurityDescriptor
+                    $acl = $GPO | Select-Object -ExpandProperty Path | Get-ADObject -Server $DestServer -Properties NTSecurityDescriptor | Select-Object -ExpandProperty NTSecurityDescriptor
                     
                     $ObjectType = [GUID]$($ACE.ObjectType)
                     $InheritedObjectType = [GUID]$($ACE.InheritedObjectType)
@@ -567,7 +572,7 @@ Param (
                     $acl.AddAccessRule($ace)
                     
                     # Commit the ACL
-                    Set-Acl -Path "AD:\$($GPO.Path)" -AclObject $acl
+                    Set-Acl -Path "GPOMigDest:\$($GPO.Path)" -AclObject $acl
                 
                 } Else {
                 # Else, Log failure to find security principal
@@ -590,7 +595,7 @@ Param (
                 If ($sid) {
                 
                     # Same effect as using Get-ACL "AD:\..."
-                    $acl = $GPO | Select-Object -ExpandProperty Path | Get-ADObject -Properties NTSecurityDescriptor | Select-Object -ExpandProperty NTSecurityDescriptor
+                    $acl = $GPO | Select-Object -ExpandProperty Path | Get-ADObject -Server $DestServer -Properties NTSecurityDescriptor | Select-Object -ExpandProperty NTSecurityDescriptor
 
                     $ObjectType = [GUID]$($ACE.ObjectType)
                     $InheritedObjectType = [GUID]$($ACE.InheritedObjectType)
@@ -600,7 +605,7 @@ Param (
                     $acl.AddAccessRule($ace)
                     
                     # Commit the ACL
-                    Set-Acl -Path "AD:\$($GPO.Path)" -AclObject $acl
+                    Set-Acl -Path "GPOMigDest:\$($GPO.Path)" -AclObject $acl
                 }
 
             }
@@ -832,7 +837,7 @@ Param (
                 -LDAPFilter "(&(objectClass=msWMI-Som)(msWMI-Name=$WMIFilterName))" `
                 -Server $DestServer
             If ($WMIFilter) {
-                Set-ADObject -Identity (Get-GPO $GPODisplayName).Path `
+                Set-ADObject -Identity (Get-GPO -Name $GPODisplayName -Domain $DestDomain -Server $DestServer).Path `
                     -Replace @{gPCWQLFilter="[$DestDomain;$($WMIFilter.Name);0]"} `
                     -Server $DestServer
             } Else {
