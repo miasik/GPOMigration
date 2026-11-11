@@ -659,6 +659,7 @@ Param (
 
 #.ExternalHelp GPOMigration.psm1-help.xml
 Function Invoke-RemoveGPO {
+[CmdletBinding(SupportsShouldProcess=$true)]
 Param (
     [Parameter(Mandatory=$true)]
     [String]
@@ -688,13 +689,25 @@ Param (
         BackupDir      : C:\temp\Backup\
         #>
 
-        Write-Host "From domain $DestDomain removing GPO: $($GPMBackup.GPODisplayName)"
-        try {
-            Remove-GPO -Domain $DestDomain -Server $DestServer -Name $GPMBackup.GPODisplayName -ErrorAction Stop
-        }
-        catch {
-            $_.Exception
+        # Nothing to remove if the destination has no GPO of this name
+        # try/catch as well: depending on the version, Get-GPO may throw when the GPO is missing
+        $Existing = $null
+        try { $Existing = Get-GPO -Domain $DestDomain -Server $DestServer -Name $GPMBackup.GPODisplayName -ErrorAction Stop } catch { }
+        If (-not $Existing) {
+            Write-Host "Not in domain ${DestDomain}, nothing to remove: $($GPMBackup.GPODisplayName)"
             Continue
+        }
+
+        # -WhatIf / -Confirm are honored here. Remove-GPO also deletes all links of the GPO.
+        If ($PSCmdlet.ShouldProcess("$($GPMBackup.GPODisplayName) ($($Existing.Id)) in $DestDomain", "Remove GPO and its links")) {
+            Write-Host "From domain $DestDomain removing GPO: $($GPMBackup.GPODisplayName)"
+            try {
+                Remove-GPO -Domain $DestDomain -Server $DestServer -Guid $Existing.Id -Confirm:$false -ErrorAction Stop
+            }
+            catch {
+                $_.Exception
+                Continue
+            }
         }
     }
 }
@@ -928,7 +941,10 @@ Param (
     $MigTableCSVPath,
     [Parameter()]
     [Switch]
-    $CopyACL
+    $CopyACL,
+    [Parameter()]
+    [Switch]
+    $RemoveExisting  # Delete GPOs of the same name in the destination before import
 )
     # Create the migration table
     # Capture the MigTablePath and MigTableCSVPath for use with subsequent cmdlets
@@ -941,13 +957,20 @@ Param (
     # No output is good.
     Test-GPOMigrationTable -Path $MigTablePath
 
-    # OPTIONAL
-    # Remove any pre-existing GPOs of the same name in the destination environment
+    # OPTIONAL, only with -RemoveExisting
+    # Remove any pre-existing GPOs of the same name in the destination environment.
     # Use this for these scenarios:
     # - You want a clean import. Remove any existing policies of the same name first.
     # - You want to start over and import them again.
-    # - Import-GPO will fail if a GPO of the same name exists in the target.
-    Invoke-RemoveGPO -DestDomain $DestDomain -DestServer $DestServer -BackupPath $BackupPath
+    # Without -RemoveExisting, Import-GPO imports the settings into an existing GPO
+    # of the same name (its GUID and links are kept).
+    # To see what would be removed without removing anything:
+    #   Invoke-RemoveGPO -DestDomain ... -DestServer ... -BackupPath ... -WhatIf
+    If ($RemoveExisting) {
+        Invoke-RemoveGPO -DestDomain $DestDomain -DestServer $DestServer -BackupPath $BackupPath
+    } Else {
+        "Keeping existing GPOs of the same name in $DestDomain. Their settings will be overwritten by the import. Use -RemoveExisting for a clean import."
+    }
 
     # Import all from backup
     # This will fail for any policies that are missing migration table accounts in the destination domain.

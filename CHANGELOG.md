@@ -27,13 +27,6 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   written and read as UTF-8. Source: reader comment of 2016-10-03 (Daniel).
 - GPO backup XML files (`backup.xml`, `gpreport.xml`) are now loaded with
   `XmlDocument.Load`, which honors the file's own encoding, instead of `Get-Content`.
-
-### Notes
-- The module now needs PowerShell 3.0 or later (`Import-Csv -Encoding`).
-- Backups made with an older version of this module may already contain `?` in
-  `GPPermissions.csv`. Export them again with this version.
-- If your own migration table CSV (`MigTable*.csv`) contains non-ASCII names,
-  save it as UTF-8.
 - `New-GPOMigrationTable`: domain names from the migration table CSV are now
   matched and replaced without regard to case. Before, the check ignored case but
   the replacement did not, so a CSV value `corp` matched `CORP\user` and then
@@ -48,6 +41,21 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   and forests (trusted domains, an admin forest) are left as they are, with a
   warning `Not translated: ...`. Before, they were silently pointed at same-named
   accounts in the destination domain. Add such domains to the CSV if they must change.
+- **Behavior change - existing GPOs are no longer deleted by default.**
+  `Start-GPOImport` used to call `Invoke-RemoveGPO` every time, deleting GPOs of
+  the same name in the destination together with their links, although the code
+  comment called this step optional. It now runs only with the new switch
+  `-RemoveExisting`. Without it, `Import-GPO` imports the settings into the existing
+  GPO, which keeps its GUID and links.
+- `Invoke-RemoveGPO` supports `-WhatIf` and `-Confirm`, and skips GPOs that do not
+  exist in the destination instead of printing an error for each of them.
+
+### Notes
+- The module now needs PowerShell 3.0 or later (`Import-Csv -Encoding`).
+- Backups made with an older version of this module may already contain `?` in
+  `GPPermissions.csv`. Export them again with this version.
+- If your own migration table CSV (`MigTable*.csv`) contains non-ASCII names,
+  save it as UTF-8.
 
 ### Maintenance
 - `Call-GPOExport.ps1`, `Call-GPOImport.ps1` and `GPOMigration.psd1` converted from
