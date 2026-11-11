@@ -222,7 +222,7 @@ Param (
 
                 # Search/replace domain names from CSV file
                 # v3 {$_ -in $Constants.EntryTypeLocalGroup, $Constants.EntryTypeGlobalGroup, $Constants.EntryTypeUnknown} {
-                {$Constants.EntryTypeUser, $Constants.EntryTypeGlobalGroup, $Constants.EntryTypeUnknown -contains $_} {
+                {$Constants.EntryTypeUser, $Constants.EntryTypeGlobalGroup, $Constants.EntryTypeLocalGroup, $Constants.EntryTypeUnknown -contains $_} {
                     ForEach ($MigDomain in $MigDomains) {
                         If ($Entry.Source -like "*@$($MigDomain.Source)") {
                             $mt.UpdateDestination($Entry.Source, $Entry.Source.Replace("@$($MigDomain.Source)","@$($MigDomain.Destination)")) | Out-Null

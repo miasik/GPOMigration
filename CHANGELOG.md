@@ -17,6 +17,9 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   - `Import-GPPermission`: ACLs are read from and written to the destination DC.
     `Set-Acl` now uses a drive mapped to `-DestServer` instead of the default `AD:` drive.
   - `Set-GPWMIFilterFromBackup`: the GPO is looked up in the destination domain.
+- `New-GPOMigrationTable`: domain local groups now get their domain name replaced
+  like global groups and users. Before, they kept the source domain name and the
+  import could not resolve them. Source: reader comments of 2015-10-09 and 2016-12-30.
 
 ## 1.1-fork - 2020-11-27
 
