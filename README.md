@@ -1,10 +1,31 @@
 # GPOMigration
 PowerShell module and sample code for migrating group policies between domains or forests
 
-Find the blog posts describing this code here:
+## About this fork
 
-Old, missed link: https://gallery.technet.microsoft.com/Migrate-Group-Policy-2b5067d8  
-Old, missed link: https://blogs.technet.microsoft.com/ashleymcglone/tag/gpo/  
+This is a maintained fork of the GPOMigration module by **Ashley McGlone**
+(former Microsoft Premier Field Engineer, "GoateePFE"). The original repository,
+[GoateePFE/GPOMigration](https://github.com/GoateePFE/GPOMigration), has not been
+updated since 2017.
+
+**What is different from the original** - fixes collected from reader comments
+on the original blog post. See [CHANGELOG.md](CHANGELOG.md) for details. Note
+that the handling of *Authenticated Users* permissions after import has changed.
+
+**Original articles** (the TechNet blog and TechNet Gallery are gone):
+
+- [Three Steps to Migrate Group Policy Between Active Directory Domains or Forests Using PowerShell](https://web.archive.org/web/20190322161417/https://blogs.technet.microsoft.com/ashleymcglone/2014/04/28/three-steps-to-migrate-group-policy-between-active-directory-domains-or-forests-using-powershell/) (April 2014, Wayback Machine copy). The text below is taken from it.
+- [GPO Migration with PowerShell - Now including WMI filters](https://learn.microsoft.com/en-us/archive/blogs/ashleymcglone/gpo-migration-with-powershell-now-including-wmi-filters) (August 2014, version 1.1).
+
+**Known limitations**
+
+- Group Policy Preferences items are not translated by migration tables (a GPMC limitation).
+- The order of GPO links on an OU is not preserved on import.
+- Test in a lab before using against production domains.
+
+---
+
+The original article text follows.
 
 # The Problem
 Have you ever wanted to copy all of your production Group Policy Objects (GPOs) into a lab for testing?  Do you have to copy GPOs between domains or forests?  Do you need to migrate them to another environment due to an acquisition, merger, or divestiture? These are common problems for many administrators.
