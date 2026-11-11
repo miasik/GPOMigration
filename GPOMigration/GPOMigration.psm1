@@ -117,7 +117,20 @@ Param(
     $Path
 )
     $GPO_ACEs = @()
-    
+
+    # SIDs of the source domain and of its forest root domain. Import-GPPermission
+    # uses them to translate built-in domain groups (Domain Admins, Domain Computers,
+    # Enterprise Admins...) by RID, whatever their names are in the OS language.
+    $SourceDomainSID = (Get-ADDomain -Server $SrceServer).DomainSID.Value
+    $SourceRootSID = $SourceDomainSID
+    Try {
+        $RootDomain = (Get-ADForest -Server $SrceServer).RootDomain
+        $SourceRootSID = (Get-ADDomain -Server $RootDomain).DomainSID.Value
+    }
+    Catch {
+        Write-Warning "Cannot read the forest root domain of $SrceDomain. Enterprise Admins and Schema Admins may not be translated."
+    }
+
     If ($All) {
         $DisplayName = Get-GPO -Server $SrceServer -Domain $SrceDomain -All |
             Select-Object -ExpandProperty DisplayName
@@ -126,15 +139,43 @@ Param(
     ForEach ($Name in $DisplayName) {
         $GPO = Get-GPO -Server $SrceServer -Domain $SrceDomain -Name $Name
         # Using the NTSecurityDescriptor attribute instead of calling Get-ACL
-        $ACL = (Get-ADObject -Server $SrceServer -Identity $GPO.Path -Properties NTSecurityDescriptor |
-            Select-Object -ExpandProperty NTSecurityDescriptor).Access
+        $SD = Get-ADObject -Server $SrceServer -Identity $GPO.Path -Properties NTSecurityDescriptor |
+            Select-Object -ExpandProperty NTSecurityDescriptor
 
-        $GPO_ACEs += $ACL | Select-Object `
-                @{name='Name';expression={$Name}}, `
-                @{name='Path';expression={$GPO.Path}}, `
-                *                
+        # Explicit ACEs only: inherited ones come from the parent container in the
+        # destination and must not be copied as explicit entries.
+        # Rules are read with SIDs; names are added for the migration table and for
+        # readability. A SID that cannot be translated keeps the SID as its name.
+        ForEach ($Rule in $SD.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])) {
+            $IdentityName = $Rule.IdentityReference.Value
+            Try {
+                $IdentityName = $Rule.IdentityReference.Translate([System.Security.Principal.NTAccount]).Value
+            }
+            Catch {
+                Write-Warning "Cannot translate SID $($Rule.IdentityReference.Value) on '$Name'. Exported by SID only."
+            }
+
+            $GPO_ACEs += New-Object PSObject -Property ([ordered]@{
+                Name                  = $Name
+                Path                  = $GPO.Path
+                ActiveDirectoryRights = $Rule.ActiveDirectoryRights
+                InheritanceType       = $Rule.InheritanceType
+                ObjectType            = $Rule.ObjectType
+                InheritedObjectType   = $Rule.InheritedObjectType
+                ObjectFlags           = $Rule.ObjectFlags
+                AccessControlType     = $Rule.AccessControlType
+                IdentityReference     = $IdentityName
+                IsInherited           = $Rule.IsInherited
+                InheritanceFlags      = $Rule.InheritanceFlags
+                PropagationFlags      = $Rule.PropagationFlags
+                IdentitySID           = $Rule.IdentityReference.Value
+                SourceDomain          = $SrceDomain
+                SourceDomainSID       = $SourceDomainSID
+                SourceRootSID         = $SourceRootSID
+            })
+        }
     }
-    
+
     $GPO_ACEs | Export-CSV (Join-Path $Path GPPermissions.csv) -NoTypeInformation -Encoding UTF8
 }
 
@@ -353,6 +394,14 @@ Param (
     $GPMSearchCriteria = $gpm.CreateSearchCriteria()
     $BackupList = $GPMBackupDir.SearchBackups($GPMSearchCriteria)
 
+    # Groups are set by SID, not by name: on a non-English DC 'Domain Computers'
+    # has a localized name and Set-GPPermission -TargetName would fail.
+    $AuthenticatedUsers = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-11'
+    $DomainComputers    = New-Object System.Security.Principal.SecurityIdentifier "$((Get-ADDomain -Server $DestServer).DomainSID.Value)-515"
+    $ApplyGroupPolicy   = [GUID]'edacfd8f-ffb3-11d1-b41d-00a0c968f939'
+    # AD drive on the destination DC, local to this function
+    New-PSDrive -Name GPOMigDest -PSProvider ActiveDirectory -Root '//RootDSE/' -Server $DestServer | Out-Null
+
     ForEach ($GPMBackup in $BackupList) {
         <#
         ID             : {2DA3E56D-061C-4CB7-95D8-DCA4D023ACF5}
@@ -365,21 +414,44 @@ Param (
         #>
 
         "Importing GPO: $($GPMBackup.GPODisplayName)"
+        $Imported = $false
         try {
-            Import-GPO -Domain $DestDomain -Server $DestServer -BackupGpoName $GPMBackup.GPODisplayName -TargetName $GPMBackup.GPODisplayName -Path $BackupPath -MigrationTable $MigTablePath -CreateIfNeeded
-            Set-GPPermissions -Domain $DestDomain -Server $DestServer -Name $GPMBackup.GPODisplayName -PermissionLevel 'GPOread' -TargetName 'Authenticated Users' -TargetType Group -Replace -Confirm: $false
-		          Set-GPPermissions -Domain $DestDomain -Server $DestServer -Name $GPMBackup.GPODisplayName -PermissionLevel 'GPOread' -TargetName 'Domain Computers' -TargetType Group -Replace -Confirm: $false		
+            $ImportedGPO = Import-GPO -Domain $DestDomain -Server $DestServer -BackupGpoName $GPMBackup.GPODisplayName -TargetName $GPMBackup.GPODisplayName -Path $BackupPath -MigrationTable $MigTablePath -CreateIfNeeded -ErrorAction Stop
+            $Imported = $true
+
+            # After import every GPO grants Authenticated Users Read + Apply, so
+            # security-filtered GPOs would apply to everyone. Leave Authenticated
+            # Users with Read only and give Domain Computers Read (needed for user
+            # policies since MS16-072). With -CopyACL the source permissions are
+            # added on top, so a source GPO that had Authenticated Users: Apply keeps it.
+            # (Fork change from 2020 by Jens Schroeder's comment, now SID-based.)
+            $acl = Get-ADObject -Server $DestServer -Identity $ImportedGPO.Path -Properties NTSecurityDescriptor |
+                Select-Object -ExpandProperty NTSecurityDescriptor
+            ForEach ($Rule in @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))) {
+                If ($Rule.IdentityReference -eq $AuthenticatedUsers -and $Rule.ObjectType -eq $ApplyGroupPolicy -and $Rule.AccessControlType -eq 'Allow') {
+                    $acl.RemoveAccessRuleSpecific($Rule)
+                }
+            }
+            ForEach ($Sid in $AuthenticatedUsers, $DomainComputers) {
+                $acl.AddAccessRule((New-Object System.DirectoryServices.ActiveDirectoryAccessRule `
+                    $Sid, ([System.DirectoryServices.ActiveDirectoryRights]'GenericRead'), 'Allow', ([System.DirectoryServices.ActiveDirectorySecurityInheritance]'All')))
+            }
+            Set-Acl -Path "GPOMigDest:\$($ImportedGPO.Path)" -AclObject $acl
+            If (-not $CopyACL) {
+                # Import-GPPermission does this when -CopyACL is used
+                $ImportedGPO.MakeAclConsistent()
+            }
         }
         catch {
             If ($_.Exception.ToString().Contains('0x8007000D')) {
                 ""
                 $_.Exception
-                "Error importing GPO: $($_.InvocationInfo.BoundParameters.Item('BackupGpoName'))"
+                "Error importing GPO: $($GPMBackup.GPODisplayName)"
                 "One or more security principals (user, group, etc.) in the migration table are not found in the destination domain."
                 ""
             } Else {
                 ""
-                "An import error occurred:"
+                "An error occurred for GPO: $($GPMBackup.GPODisplayName)"
                 $_ | fl * -force
                 $_.InvocationInfo.BoundParameters | fl * -force
                 $_.Exception
@@ -387,10 +459,11 @@ Param (
             }
         } # End Catch
 
-        # Migrate the ACLs
-        # NOTE: This may not handle universal groups or groups from other domains.
-        If ($CopyACL) {
+        # Migrate the ACLs, only for GPOs that were imported
+        If ($CopyACL -and $Imported) {
             Import-GPPermission -DestDomain $DestDomain -DestServer $DestServer -DisplayName $GPMBackup.GPODisplayName -Path "$BackupPath\GPPermissions.csv" -MigTablePath $MigTablePath
+        } ElseIf ($CopyACL) {
+            Write-Warning "GPO was not imported, permissions not copied: $($GPMBackup.GPODisplayName)"
         } # End If CopyACL
     } # End ForEach GPMBackup
 } # End Function
@@ -475,6 +548,30 @@ Param (
     [String]
     $MigTablePath
 )
+    <#
+    How each exported ACE is translated, in this order:
+    1. The migration table has an explicit destination for this principal of the
+       source domain (name@sourcedomain) -> the destination account.
+    2. Well-known SID that does not belong to a domain (Authenticated Users,
+       SYSTEM, CREATOR OWNER, BUILTIN\...) -> the same SID.
+    3. Built-in group of the source domain (RID below 1000: Domain Admins,
+       Domain Computers, Group Policy Creator Owners...) -> the same RID in the
+       destination domain. Enterprise Admins, Schema Admins and Enterprise
+       Read-only DCs -> the same RID in the destination forest root domain.
+    4. Principal of another domain or forest (trusted domain, admin forest)
+       -> the same SID, reported. The destination must trust that domain.
+    5. Anything else (an account of the source domain without a destination in
+       the migration table) -> skipped with a warning.
+    Names are never resolved without their domain: a bare name would resolve in
+    the domain of the computer running this script.
+    #>
+
+    $GPO_ACEs_CSV = Import-Csv $Path -Encoding UTF8
+    If (-not ($GPO_ACEs_CSV | Select-Object -First 1 | Get-Member -Name IdentitySID)) {
+        Write-Error "$Path has no SID columns. It was made by an older version of this module. Export the GPOs again with this version."
+        Return
+    }
+
     $MigTable = Show-GPOMigrationTable -Path $MigTablePath |
         Select-Object *, `
             @{name='SourceName';expression={($_.Source -split '@')[0]}}, `
@@ -482,58 +579,18 @@ Param (
             @{name='DestinationName';expression={($_.Destination -split '@')[0]}}, `
             @{name='DestinationDomain';expression={($_.Destination -split '@')[1]}}
 
-    $GPO_ACEs_CSV = Import-Csv $Path -Encoding UTF8 |
-        Select-Object *, `
-            @{name='IDName';expression={($_.IdentityReference -split '\\')[-1]}}, `
-            @{name='IDDomain';expression={($_.IdentityReference -split '\\')[0]}}
+    $DestDomainSID = (Get-ADDomain -Server $DestServer).DomainSID.Value
+    $DestRootSID = $DestDomainSID
+    Try {
+        $RootDomain = (Get-ADForest -Server $DestServer).RootDomain
+        $DestRootSID = (Get-ADDomain -Server $RootDomain).DomainSID.Value
+    }
+    Catch {
+        Write-Warning "Cannot read the forest root domain of $DestDomain. Enterprise Admins and Schema Admins are mapped to $DestDomain."
+    }
+    # Groups that exist only in the forest root domain
+    $ForestRootRIDs = 498, 518, 519
 
-    <#
-    Show-GPOMigrationTable -Path $MigTablePath | ft -auto
-
-    Source                              DestOption   Type           Destination                       
-    ------                              ----------   ----           -----------                       
-    Administrators                      SameAsSource Unknown                                          
-    Domain Admins@wingtiptoys.local     Set          GlobalGroup    Domain Admins@cohovineyard.com    
-    fsogroup@wingtiptoys.local          Set          GlobalGroup    fsogroup@cohovineyard.com         
-    Enterprise Admins@wingtiptoys.local Set          UniversalGroup Enterprise Admins@cohovineyard.com
-    joebobtoo@wingtiptoys.local         Set          User           joebobtoo@cohovineyard.com        
-    anlan@wingtiptoys.local             Set          User           anlan@cohovineyard.com            
-    fsouser@wingtiptoys.local           Set          User           fsouser@cohovineyard.com          
-    anhill@wingtiptoys.local            Set          User           anhill@cohovineyard.com           
-    joebobfoo@wingtiptoys.local         Set          User           joebobfoo@cohovineyard.com 
-
-    Selected and split...
-    
-    MigTable
-    
-    Source            : joebobfoo@wingtiptoys.local
-    DestOption        : Set
-    Type              : User
-    Destination       : joebobfoo@cohovineyard.com
-    SourceName        : joebobfoo
-    SourceDomain      : wingtiptoys.local
-    DestinationName   : joebobfoo
-    DestinationDomain : cohovineyard.com       
-
-    ACLs
-
-    Name                  : Starter Computer
-    Path                  : cn={FC18876F-2975-4638-B8DE-D83AB4415A51},cn=policies,c
-                            n=system,DC=wingtiptoys,DC=local
-    ActiveDirectoryRights : CreateChild, DeleteChild, Self, WriteProperty, DeleteTr
-                            ee, Delete, GenericRead, WriteDacl, WriteOwner
-    InheritanceType       : All
-    ObjectType            : 00000000-0000-0000-0000-000000000000
-    InheritedObjectType   : 00000000-0000-0000-0000-000000000000
-    ObjectFlags           : None
-    AccessControlType     : Allow
-    IdentityReference     : WINGTIPTOYS\Enterprise Admins
-    IsInherited           : False
-    InheritanceFlags      : ContainerInherit
-    PropagationFlags      : None
-    IDName              * : Enterprise Admins
-    IDDomain            * : WINGTIPTOYS
-    #>
     # The default AD: drive points at the domain of the logged-on user.
     # Map a drive to the destination DC so Set-Acl writes to the right domain.
     # The drive is local to this function and disappears when it returns.
@@ -542,117 +599,92 @@ Param (
     ForEach ($Name in $DisplayName) {
 
         "Importing GPO Permissions: $Name"
-        
+
         $GPO = Get-GPO -Domain $DestDomain -Server $DestServer -DisplayName $Name
+        # Read the ACL once, add all ACEs, write it once
+        $acl = Get-ADObject -Server $DestServer -Identity $GPO.Path -Properties NTSecurityDescriptor |
+            Select-Object -ExpandProperty NTSecurityDescriptor
+        $Changed = $false
 
         ForEach ($ACE in ($GPO_ACEs_CSV | Where-Object {$_.Name -eq $Name})) {
 
-            Write-Host "Setting GPO permission: '$($ACE.IDName)' on '$Name'"    
+            $IDName = ($ACE.IdentityReference -split '\\')[-1]
+            $SrcSid = New-Object System.Security.Principal.SecurityIdentifier $ACE.IdentitySID
+            $DomSid = $SrcSid.AccountDomainSid
+            $RID    = [long](($ACE.IdentitySID -split '-')[-1])
+            $NewSid = $null
 
-            # Find the CSV ACE identity name in the MigTable
-            # Possible zero or one matches, should not be multiple
-            $MigID = $MigTable | Where-Object {$_.SourceName -eq $ACE.IDName}
-            
-            # If entry, then attempt to set it
-            If ($MigID -and $MigID.Type -ne "Unknown") {
-                # Find the AD object based on the type listed in the MigTable
+            # 1. Explicit destination in the migration table, matched by name AND source domain
+            $MigID = $MigTable | Where-Object {
+                $_.SourceName -eq $IDName -and $_.SourceDomain -eq $ACE.SourceDomain -and
+                $_.DestinationName -and $_.Destination -ne $_.Source -and $_.Type -ne 'Unknown'
+            } | Select-Object -First 1
+
+            If ($MigID -and $DomSid -and $DomSid.Value -eq $ACE.SourceDomainSID -and $RID -ge 1000) {
                 $ADObject = $null
-
                 Try {
                     Switch ($MigID.Type) {
-                        'Unkown'          {$ADObject = $null; break}
-                        'User'            {$ADObject = Get-ADUser -Identity $MigID.DestinationName -Server $MigID.DestinationDomain; break}
-                        'Computer'        {$ADObject = Get-ADComputer -Identity $ACE.IDName -Server $DestDomain; <# Special handling #>; break}
-                        'GlobalGroup'     {$ADObject = Get-ADGroup -Identity $MigID.DestinationName -Server $MigID.DestinationDomain; break}
-                        'LocalGroup'      {$ADObject = Get-ADGroup -Identity $MigID.DestinationName -Server $MigID.DestinationDomain; break}
-                        'UniversalGroup'  {$ADObject = Get-ADGroup -Identity $MigID.DestinationName -Server "$($MigID.DestinationDomain):3268"; break}
+                        'User'            {$ADObject = Get-ADUser     -Identity $MigID.DestinationName -Server $MigID.DestinationDomain; break}
+                        'Computer'        {$ADObject = Get-ADComputer -Identity $MigID.DestinationName -Server $MigID.DestinationDomain; break}
+                        'GlobalGroup'     {$ADObject = Get-ADGroup    -Identity $MigID.DestinationName -Server $MigID.DestinationDomain; break}
+                        'LocalGroup'      {$ADObject = Get-ADGroup    -Identity $MigID.DestinationName -Server $MigID.DestinationDomain; break}
+                        'UniversalGroup'  {$ADObject = Get-ADGroup    -Identity $MigID.DestinationName -Server "$($MigID.DestinationDomain):3268"; break}
                         Default           {$ADObject = $null; break}
                     }
                 }
                 Catch {
-                    # AD object not found. Warning written below.
+                    # Not found. Warning written below.
                 }
-                
-                # If we found the object, then attempt to set the permission.
                 If ($ADObject) {
-
-                    "Found ADObject $($ADObject.Name). Writing permission."
-                    # Same effect as using Get-ACL "AD:\..."
-                    $acl = $GPO | Select-Object -ExpandProperty Path | Get-ADObject -Server $DestServer -Properties NTSecurityDescriptor | Select-Object -ExpandProperty NTSecurityDescriptor
-                    
-                    $ObjectType = [GUID]$($ACE.ObjectType)
-                    $InheritedObjectType = [GUID]$($ACE.InheritedObjectType)
-                    $ace = New-Object System.DirectoryServices.ActiveDirectoryAccessRule `
-                        $ADObject.SID, $ACE.ActiveDirectoryRights, $ACE.AccessControlType, $ObjectType, `
-                        $ACE.InheritanceType, $InheritedObjectType
-                    $acl.AddAccessRule($ace)
-                    
-                    # Commit the ACL
-                    Set-Acl -Path "GPOMigDest:\$($GPO.Path)" -AclObject $acl
-                
+                    $NewSid = $ADObject.SID
+                    "  $($ACE.IdentityReference) -> $($MigID.Destination) (migration table)"
                 } Else {
-                # Else, Log failure to find security principal
-                    Write-Warning "ADObject not found.  ACE not set: '$($ACE.IDName)' on '$Name'"    
+                    Write-Warning "Not found in the destination: '$($MigID.Destination)'. ACE not set: '$($ACE.IdentityReference)' on '$Name'"
+                    Continue
                 }
-                
-            } Else {
-            # Else, attempt to set without migration table translation (ie. CREATOR OWNER, etc.)
-
-                "Setting ACE without migration table translation: '$($ACE.IDName)' on '$Name'"
-
-                $sid = $null
-                Try {
-                    $sid = (New-Object System.Security.Principal.NTAccount($ACE.IDName)).Translate([System.Security.Principal.SecurityIdentifier])
-                }
-                Catch {
-                    Write-Warning "Error.  Cannot set: '$($ACE.IDName)' on '$Name'"
-                }
-                
-                If ($sid) {
-                
-                    # Same effect as using Get-ACL "AD:\..."
-                    $acl = $GPO | Select-Object -ExpandProperty Path | Get-ADObject -Server $DestServer -Properties NTSecurityDescriptor | Select-Object -ExpandProperty NTSecurityDescriptor
-
-                    $ObjectType = [GUID]$($ACE.ObjectType)
-                    $InheritedObjectType = [GUID]$($ACE.InheritedObjectType)
-                    $ace = New-Object System.DirectoryServices.ActiveDirectoryAccessRule `
-                        $sid, $ACE.ActiveDirectoryRights, $ACE.AccessControlType, $ObjectType, `
-                        $ACE.InheritanceType, $InheritedObjectType
-                    $acl.AddAccessRule($ace)
-                    
-                    # Commit the ACL
-                    Set-Acl -Path "GPOMigDest:\$($GPO.Path)" -AclObject $acl
-                }
-
             }
-<#
-            # This is how you would set permissions using the GPO cmdlets.
-            # However, they do not support DENY permissions. Not cool.
-                        
-            If ($ACE.'Trustee-SidType' -eq 'WellKnownGroup') {
-                $ACE.'Trustee-SidType' = 'Group'
+            # 2. Well-known SID that does not belong to a domain
+            ElseIf (-not $DomSid) {
+                $NewSid = $SrcSid
+                "  $($ACE.IdentityReference) -> same SID (well-known)"
+            }
+            # 3a. Forest root groups of the source forest
+            ElseIf (($DomSid.Value -eq $ACE.SourceDomainSID -or $DomSid.Value -eq $ACE.SourceRootSID) -and $ForestRootRIDs -contains $RID) {
+                $NewSid = New-Object System.Security.Principal.SecurityIdentifier "$DestRootSID-$RID"
+                "  $($ACE.IdentityReference) -> RID $RID of the destination forest root"
+            }
+            # 3b. Built-in groups of the source domain
+            ElseIf ($DomSid.Value -eq $ACE.SourceDomainSID -and $RID -lt 1000) {
+                $NewSid = New-Object System.Security.Principal.SecurityIdentifier "$DestDomainSID-$RID"
+                "  $($ACE.IdentityReference) -> RID $RID of $DestDomain"
+            }
+            # 5. Account of the source domain without a destination in the migration table
+            ElseIf ($DomSid.Value -eq $ACE.SourceDomainSID) {
+                Write-Warning "No destination in the migration table. ACE not set: '$($ACE.IdentityReference)' on '$Name'"
+                Continue
+            }
+            # 4. Principal of another domain or forest: keep as is
+            Else {
+                $NewSid = $SrcSid
+                Write-Host "  $($ACE.IdentityReference) ($($ACE.IdentitySID)) -> kept as is (other domain or forest; $DestDomain must trust it)"
             }
 
-            Try {
-                Set-GPPermissions                                                                                     `
-                    -Name            $GPMBackup.GPODisplayName                                                        `
-                    -PermissionLevel $([Microsoft.GroupPolicy.GPPermissionType]$ACE.Permission)                       `
-                    -TargetName      $ACE.'Trustee-Name'                                                              `
-                    -TargetType      $([Microsoft.GroupPolicy.Commands.PermissionTrusteeType]$ACE.'Trustee-SidType')  `
-                    -Domain          $DestDomain                                                                      `
-                    -Server          $DestServer                                                                      `
-                    -Replace |
-                Out-Null
-            }
-            Catch {
-                Write-Warning "Unable to set the following GP permission: '$($ACE.'Trustee-Name')' on '$($GPMBackup.GPODisplayName)'`n$ACE`n$($_.Exception)"
-            }
-#>
-
-""
+            $ObjectType = [GUID]$($ACE.ObjectType)
+            $InheritedObjectType = [GUID]$($ACE.InheritedObjectType)
+            $NewACE = New-Object System.DirectoryServices.ActiveDirectoryAccessRule `
+                $NewSid, $ACE.ActiveDirectoryRights, $ACE.AccessControlType, $ObjectType, `
+                $ACE.InheritanceType, $InheritedObjectType
+            $acl.AddAccessRule($NewACE)
+            $Changed = $true
         } # End ForEach ACE
+
+        If ($Changed) {
+            # Commit the ACL
+            Set-Acl -Path "GPOMigDest:\$($GPO.Path)" -AclObject $acl
+        }
         # Force the ACL changes to SYSVOL
         $GPO.MakeAclConsistent()
+        ""
     } # End ForEach DisplayName
 } # End Function
 
