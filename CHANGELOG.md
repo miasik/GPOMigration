@@ -6,7 +6,17 @@ Original repository: https://github.com/GoateePFE/GPOMigration
 
 ## [Unreleased] - planned as 1.2
 
-Nothing yet.
+### Fixed
+- Running from a computer outside the source or destination domain (for example,
+  an admin forest). Several AD calls ignored `-SrceServer` / `-DestServer` and went
+  to the domain of the logged-on user instead:
+  - `Export-GPPermission`: `Get-ADObject` now uses `-Server $SrceServer`.
+    Before, `GPPermissions.csv` came out empty. Source: reader comments of
+    2015-11-25 and 2018-05-01 (LIHU).
+  - `Invoke-BackupGPO`: the list of WMI filters is now read from the source domain.
+  - `Import-GPPermission`: ACLs are read from and written to the destination DC.
+    `Set-Acl` now uses a drive mapped to `-DestServer` instead of the default `AD:` drive.
+  - `Set-GPWMIFilterFromBackup`: the GPO is looked up in the destination domain.
 
 ## 1.1-fork - 2020-11-27
 
