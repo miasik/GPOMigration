@@ -135,7 +135,7 @@ Param(
                 *                
     }
     
-    $GPO_ACEs | Export-CSV (Join-Path $Path GPPermissions.csv) -NoTypeInformation
+    $GPO_ACEs | Export-CSV (Join-Path $Path GPPermissions.csv) -NoTypeInformation -Encoding UTF8
 }
 
 
@@ -159,7 +159,7 @@ Param(
     Get-ADObject -Server $SrceServer -SearchBase $WMIPath -Filter {objectClass -eq 'msWMI-Som'} -Properties msWMI-Author, msWMI-Name, msWMI-Parm1, msWMI-Parm2 |
      Where-Object {$Name -contains $_."msWMI-Name"} |
      Select-Object msWMI-Author, msWMI-Name, msWMI-Parm1, msWMI-Parm2 |
-     Export-CSV (Join-Path $Path WMIFilter.csv) -NoTypeInformation
+     Export-CSV (Join-Path $Path WMIFilter.csv) -NoTypeInformation -Encoding UTF8
 }
 
 
@@ -398,7 +398,7 @@ Param (
 
     } Else {
     
-        $WMIImport = Import-Csv $WMIExportFile
+        $WMIImport = Import-Csv $WMIExportFile -Encoding UTF8
         $WMIPath = "CN=SOM,CN=WMIPolicy,$((Get-ADDomain -Server $DestServer).SystemsContainer)"
 
         $ExistingWMIFilters = Get-ADObject -Server $DestServer -SearchBase $WMIPath `
@@ -466,7 +466,7 @@ Param (
             @{name='DestinationName';expression={($_.Destination -split '@')[0]}}, `
             @{name='DestinationDomain';expression={($_.Destination -split '@')[1]}}
 
-    $GPO_ACEs_CSV = Import-Csv $Path |
+    $GPO_ACEs_CSV = Import-Csv $Path -Encoding UTF8 |
         Select-Object *, `
             @{name='IDName';expression={($_.IdentityReference -split '\\')[-1]}}, `
             @{name='IDDomain';expression={($_.IdentityReference -split '\\')[0]}}
@@ -724,7 +724,9 @@ Param (
         Comment        : Desktop Super Powers
         BackupDir      : C:\temp\Backup\
         #>
-        [xml]$GPReport = Get-Content (Join-Path -Path $GPMBackup.BackupDir -ChildPath "$($GPMBackup.ID)\gpreport.xml")
+        # XmlDocument.Load honors the BOM and the encoding declared in the file
+        $GPReport = New-Object System.Xml.XmlDocument
+        $GPReport.Load((Join-Path -Path $GPMBackup.BackupDir -ChildPath "$($GPMBackup.ID)\gpreport.xml"))
         
         $gPLinks = $null
         $gPLinks = $GPReport.GPO.LinksTo | Select-Object SOMName, SOMPath, Enabled, NoOverride
@@ -827,7 +829,9 @@ Param (
 
         $GPODisplayName = $WMIFilterName = $null
 
-        [xml]$BackupXML = Get-Content $Backup.FullName
+        # XmlDocument.Load honors the BOM and the encoding declared in the file
+        $BackupXML = New-Object System.Xml.XmlDocument
+        $BackupXML.Load($Backup.FullName)
         $GPODisplayName = $BackupXML.GroupPolicyBackupScheme.GroupPolicyObject.GroupPolicyCoreSettings.DisplayName."#cdata-section"
         $WMIFilterName = $BackupXML.GroupPolicyBackupScheme.GroupPolicyObject.GroupPolicyCoreSettings.WMIFilterName."#cdata-section"
 
