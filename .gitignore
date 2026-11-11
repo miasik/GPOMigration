@@ -1,0 +1,20 @@
+# Working output of GPOMigration runs - may contain internal domain,
+# account and path names. Never commit these.
+work/
+GPO Backup */
+*.migtable
+GPPermissions.csv
+WMIFilter.csv
+
+# Your own mapping CSVs (keep only the sample in the repo)
+MigTable*.csv
+!MigTable_sample.csv
+
+# Logs and transcripts
+*.log
+*.txt
+
+# Editor / OS clutter
+.vscode/
+Thumbs.db
+desktop.ini
