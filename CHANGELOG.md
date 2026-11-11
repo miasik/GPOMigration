@@ -33,6 +33,25 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   changed nothing - the entry silently kept the source domain. The sample CSV has
   NetBIOS names in lower case, so this happened with the sample as shipped.
   UNC paths are matched the same way.
+- GPO permissions are now copied by SID instead of by name:
+  - An account without a destination in the migration table was looked up by its
+    bare name, which resolved in the domain of the computer running the script.
+    Run from an admin forest, a GPO in the new domain could get an ACE for an
+    admin forest group of the same name. Such ACEs are now skipped with a warning.
+  - Accounts of different domains with the same name (`Domain Admins` of two
+    domains) could match the same migration table entry. Entries are now matched
+    by name and domain.
+  - Built-in groups (Domain Admins, Domain Computers, Enterprise Admins...) are
+    translated by RID, and well-known principals (Authenticated Users, SYSTEM,
+    CREATOR OWNER, BUILTIN\...) by their SID. This works whatever the OS language;
+    before, localized names like `Domänen-Admins` failed.
+- `Invoke-ImportGPO`: *Authenticated Users* and *Domain Computers* get Read by SID.
+  `Set-GPPermissions -TargetName 'Domain Computers'` failed on non-English DCs,
+  where the group has a localized name.
+- `Invoke-ImportGPO`: permissions are no longer copied to a GPO whose import failed.
+- `Export-GPPermission`: inherited ACEs are no longer exported. Before, they were
+  written to the destination GPO as explicit ACEs.
+- `Import-GPPermission`: the ACL of each GPO is written once instead of once per ACE.
 
 ### Changed
 - **Behavior change - entries of other domains.** The 2020 fork change that set
@@ -49,6 +68,10 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   GPO, which keeps its GUID and links.
 - `Invoke-RemoveGPO` supports `-WhatIf` and `-Confirm`, and skips GPOs that do not
   exist in the destination instead of printing an error for each of them.
+- **Behavior change - principals of other domains and forests in GPO permissions**
+  (trusted domains, an admin forest) are copied with their SID as is and reported.
+  The destination domain must trust their domain. The migration table is not used
+  for them.
 
 ### Notes
 - The module now needs PowerShell 3.0 or later (`Import-Csv -Encoding`).
@@ -56,6 +79,9 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   `GPPermissions.csv`. Export them again with this version.
 - If your own migration table CSV (`MigTable*.csv`) contains non-ASCII names,
   save it as UTF-8.
+- `GPPermissions.csv` has new columns (`IdentitySID`, `SourceDomain`,
+  `SourceDomainSID`, `SourceRootSID`). Backups exported with an older version
+  cannot be imported with `-CopyACL`; export them again.
 
 ### Maintenance
 - `Call-GPOExport.ps1`, `Call-GPOImport.ps1` and `GPOMigration.psd1` converted from
