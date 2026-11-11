@@ -20,6 +20,20 @@ Original repository: https://github.com/GoateePFE/GPOMigration
 - `New-GPOMigrationTable`: domain local groups now get their domain name replaced
   like global groups and users. Before, they kept the source domain name and the
   import could not resolve them. Source: reader comments of 2015-10-09 and 2016-12-30.
+- Non-ASCII names (Cyrillic, German umlauts and so on) in GPO names, groups and
+  WMI filters. Windows PowerShell 5.1 `Export-Csv` writes ASCII by default, so such
+  characters became `?` in `GPPermissions.csv` and `WMIFilter.csv`, and the import
+  failed with warnings like `Cannot set: 'Dom?nen-Admins'`. Both files are now
+  written and read as UTF-8. Source: reader comment of 2016-10-03 (Daniel).
+- GPO backup XML files (`backup.xml`, `gpreport.xml`) are now loaded with
+  `XmlDocument.Load`, which honors the file's own encoding, instead of `Get-Content`.
+
+### Notes
+- The module now needs PowerShell 3.0 or later (`Import-Csv -Encoding`).
+- Backups made with an older version of this module may already contain `?` in
+  `GPPermissions.csv`. Export them again with this version.
+- If your own migration table CSV (`MigTable*.csv`) contains non-ASCII names,
+  save it as UTF-8.
 
 ## 1.1-fork - 2020-11-27
 
