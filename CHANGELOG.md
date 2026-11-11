@@ -34,6 +34,20 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   `GPPermissions.csv`. Export them again with this version.
 - If your own migration table CSV (`MigTable*.csv`) contains non-ASCII names,
   save it as UTF-8.
+- `New-GPOMigrationTable`: domain names from the migration table CSV are now
+  matched and replaced without regard to case. Before, the check ignored case but
+  the replacement did not, so a CSV value `corp` matched `CORP\user` and then
+  changed nothing - the entry silently kept the source domain. The sample CSV has
+  NetBIOS names in lower case, so this happened with the sample as shipped.
+  UNC paths are matched the same way.
+
+### Changed
+- **Behavior change - entries of other domains.** The 2020 fork change that set
+  the destination domain on every `name@domain` entry now applies only to entries
+  of the source domain that the CSV did not translate. Entries of other domains
+  and forests (trusted domains, an admin forest) are left as they are, with a
+  warning `Not translated: ...`. Before, they were silently pointed at same-named
+  accounts in the destination domain. Add such domains to the CSV if they must change.
 
 ### Maintenance
 - `Call-GPOExport.ps1`, `Call-GPOImport.ps1` and `GPOMigration.psd1` converted from
