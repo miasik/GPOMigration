@@ -207,48 +207,64 @@ Param (
 
         $szSourceDomain = $GPMBackup.GPODomain
 
+        # Matching is case-insensitive on purpose: GPMC writes NetBIOS names in
+        # upper case (CORP\user), while the CSV may have them in lower case.
+        # The old code checked with -like (case-insensitive) but replaced with
+        # String.Replace() (case-sensitive), so such entries were silently left
+        # with the source domain. In replacement strings '$' is special, so it
+        # is doubled.
+
+        # Sources translated by the CSV rules below
+        $Translated = @{}
+
         ForEach ($Entry in $mt.GetEntries()) {
 
             Switch ($Entry.EntryType) {
-                
-                # Search/replace UNC paths from CSV file
+
+                # Search/replace UNC paths from CSV file (prefix match)
                 $Constants.EntryTypeUNCPath {
                     ForEach ($MigUNC in $MigUNCs) {
-                        If ($Entry.Source -like "$($MigUNC.Source)*") {
-                            $mt.UpdateDestination($Entry.Source, $Entry.Source.Replace("$($MigUNC.Source)","$($MigUNC.Destination)")) | Out-Null
+                        $Pattern = '^' + [regex]::Escape($MigUNC.Source)
+                        If ($Entry.Source -match $Pattern) {
+                            $mt.UpdateDestination($Entry.Source, ($Entry.Source -replace $Pattern, $MigUNC.Destination.Replace('$','$$'))) | Out-Null
+                            $Translated[$Entry.Source] = $true
                         }
                     }
                 }
 
-                # Search/replace domain names from CSV file
-                # v3 {$_ -in $Constants.EntryTypeLocalGroup, $Constants.EntryTypeGlobalGroup, $Constants.EntryTypeUnknown} {
-                {$Constants.EntryTypeUser, $Constants.EntryTypeGlobalGroup, $Constants.EntryTypeLocalGroup, $Constants.EntryTypeUnknown -contains $_} {
-                    ForEach ($MigDomain in $MigDomains) {
-                        If ($Entry.Source -like "*@$($MigDomain.Source)") {
-                            $mt.UpdateDestination($Entry.Source, $Entry.Source.Replace("@$($MigDomain.Source)","@$($MigDomain.Destination)")) | Out-Null
-                        } ElseIf ($Entry.Source -like "$($MigDomain.Source)\*") {
-                            $mt.UpdateDestination($Entry.Source, $Entry.Source.Replace("$($MigDomain.Source)\","$($MigDomain.Destination)\")) | Out-Null
-                        }
-                    }
-                }
-
-                # In some scenarios like single-domain forest the Enterprise Admin universal group needs to be migrated.
+                # Search/replace domain names from CSV file:
+                # name@domain.fqdn (suffix) or NETBIOS\name (prefix).
+                # Universal groups are included: in some scenarios like a single-domain
+                # forest the Enterprise Admins group needs to be migrated.
                 ### Need to add logic to ignore it in other cases, as it may not always need to be translated.
-                # v3 {$_ -in $Constants.EntryTypeUniversalGroup} {
-                {$Constants.EntryTypeUniversalGroup -contains $_} {
+                {$Constants.EntryTypeUser, $Constants.EntryTypeGlobalGroup, $Constants.EntryTypeLocalGroup, $Constants.EntryTypeUniversalGroup, $Constants.EntryTypeUnknown -contains $_} {
                     ForEach ($MigDomain in $MigDomains) {
-                        If ($Entry.Source -like "*@$($MigDomain.Source)") {
-                            $mt.UpdateDestination($Entry.Source, $Entry.Source.Replace("@$($MigDomain.Source)","@$($MigDomain.Destination)")) | Out-Null
-                        } ElseIf ($Entry.Source -like "$($MigDomain.Source)\*") {
-                            $mt.UpdateDestination($Entry.Source, $Entry.Source.Replace("$($MigDomain.Source)\","$($MigDomain.Destination)\")) | Out-Null
+                        $Suffix = '@' + [regex]::Escape($MigDomain.Source) + '$'
+                        $Prefix = '^' + [regex]::Escape($MigDomain.Source) + '\\'
+                        If ($Entry.Source -match $Suffix) {
+                            $mt.UpdateDestination($Entry.Source, ($Entry.Source -replace $Suffix, ('@' + $MigDomain.Destination.Replace('$','$$')))) | Out-Null
+                            $Translated[$Entry.Source] = $true
+                        } ElseIf ($Entry.Source -match $Prefix) {
+                            $mt.UpdateDestination($Entry.Source, ($Entry.Source -replace $Prefix, ($MigDomain.Destination.Replace('$','$$') + '\'))) | Out-Null
+                            $Translated[$Entry.Source] = $true
                         }
                     }
                 }
 
             } # end switch
-            if ($Entry.Source -like "*@*") {
-                $mt.UpdateDestination($Entry.Source, (($Entry.Source -split("@"))[0]) + '@' +$DestDomain) | Out-Null
+
+            # Safety net (fork change from 2020, narrowed in 1.2): an entry of the
+            # source domain in name@domain form that the CSV did not translate gets
+            # the destination domain. Entries of other domains and forests (trusted
+            # domains, admin forest) are left as they are and reported.
+            If ($Entry.Source -like '*@*' -and -not $Translated.ContainsKey($Entry.Source)) {
+                $EntryDomain = ($Entry.Source -split '@')[-1]
+                If ($EntryDomain -eq $szSourceDomain) {
+                    $mt.UpdateDestination($Entry.Source, (($Entry.Source -split '@')[0]) + '@' + $DestDomain) | Out-Null
+                } Else {
+                    Write-Warning "Not translated: '$($Entry.Source)'. Add its domain to the migration table CSV if it must change."
                 }
+            }
         } # end foreach
 
         $MigTablePath = Join-Path -Path $Path -ChildPath "$szSourceDomain-to-$DestDomain.migtable"
