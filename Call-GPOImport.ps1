@@ -97,9 +97,18 @@ If (-not $BackupPath) {
 # Destination: the domain of this computer and its PDC emulator. Replace with
 # names to import into another domain, e.g.
 # $DestDomain = 'cohovineyard.com'; $DestServer = 'cvdcr2.cohovineyard.com'
-$DestDomain  = (Get-ADDomain).DNSRoot
+$DestDomain  = (Get-ADDomain -Current LocalComputer).DNSRoot
 $DestServer  = (Get-ADDomain -Server $DestDomain).PDCEmulator
 "Destination: $DestDomain, server $DestServer"
+
+# Stop if the backup comes from this very domain (import run on the source side)
+$SourceFile = Join-Path $BackupPath 'SourceDomain.csv'
+If ((Test-Path $SourceFile) -and
+    (Import-Csv $SourceFile -Encoding UTF8).DomainSID -eq (Get-ADDomain -Server $DestServer).DomainSID.Value) {
+    Write-Warning "This backup was exported from $DestDomain itself. Run the import in the new domain."
+    Stop-Transcript
+    Return
+}
 # Migration table CSV. Leave empty to build it from the source domain (saved in the
 # backup by the export) and the destination domain: FQDN and NetBIOS name.
 # Set a file name to use your own CSV, for example with UNC paths:
@@ -127,6 +136,9 @@ Import-Csv $MigTableCSVPath | Format-Table -AutoSize | Out-String -Width 300
 # .migtable file in the working folder; nothing changes in the destination yet.
 $MigTableCheck = New-GPOMigrationTable -DestDomain $DestDomain -Path $Path -BackupPath $BackupPath -MigTableCSVPath $MigTableCSVPath
 Show-GPOMigrationTable -Path $MigTableCheck | Format-Table -AutoSize -Wrap | Out-String -Width 300
+# GPMC check of the table: accounts and paths it cannot resolve. No output is good.
+"Migration table check (no output below is good):"
+Test-GPOMigrationTable -Path $MigTableCheck | Format-List | Out-String -Width 300
 If ((Read-Host "Check the migration table above. Import into $DestDomain now? (y/n)") -ne 'y') {
     "Import cancelled."
     Stop-Transcript

@@ -399,6 +399,24 @@ Param (
     $AuthenticatedUsers = New-Object System.Security.Principal.SecurityIdentifier 'S-1-5-11'
     $DomainComputers    = New-Object System.Security.Principal.SecurityIdentifier "$((Get-ADDomain -Server $DestServer).DomainSID.Value)-515"
     $ApplyGroupPolicy   = [GUID]'edacfd8f-ffb3-11d1-b41d-00a0c968f939'
+
+    # Check the permissions file before anything changes: below, Apply is removed
+    # from Authenticated Users and only the copied source permissions give it back.
+    If ($CopyACL) {
+        $PermFile = Join-Path $BackupPath 'GPPermissions.csv'
+        If (-not (Test-Path $PermFile)) {
+            Write-Error "No GPPermissions.csv in $BackupPath. Nothing was imported."
+            Return
+        }
+        If (-not (Import-Csv $PermFile -Encoding UTF8 | Select-Object -First 1 | Get-Member -Name IdentitySID)) {
+            Write-Error "$PermFile has no SID columns (made by an older version). Export the GPOs again. Nothing was imported."
+            Return
+        }
+    }
+
+    # GPOs whose import failed. Import-GPLink and Set-GPWMIFilterFromBackup skip them.
+    $script:GPOMigFailedImports = @()
+
     # AD drive on the destination DC, local to this function
     New-PSDrive -Name GPOMigDest -PSProvider ActiveDirectory -Root '//RootDSE/' -Server $DestServer | Out-Null
 
@@ -415,6 +433,10 @@ Param (
 
         "Importing GPO: $($GPMBackup.GPODisplayName)"
         $Imported = $false
+        # Was the GPO there before? If not and the import fails, the empty GPO that
+        # Import-GPO -CreateIfNeeded left behind is removed.
+        $Existed = $false
+        try { $null = Get-GPO -Domain $DestDomain -Server $DestServer -Name $GPMBackup.GPODisplayName -ErrorAction Stop; $Existed = $true } catch { }
         try {
             $ImportedGPO = Import-GPO -Domain $DestDomain -Server $DestServer -BackupGpoName $GPMBackup.GPODisplayName -TargetName $GPMBackup.GPODisplayName -Path $BackupPath -MigrationTable $MigTablePath -CreateIfNeeded -ErrorAction Stop
             $Imported = $true
@@ -458,6 +480,16 @@ Param (
                 ""
             }
         } # End Catch
+
+        If (-not $Imported) {
+            $script:GPOMigFailedImports += $GPMBackup.GPODisplayName
+            If (-not $Existed) {
+                try {
+                    Remove-GPO -Domain $DestDomain -Server $DestServer -Name $GPMBackup.GPODisplayName -Confirm:$false -ErrorAction Stop
+                    Write-Warning "Removed the empty GPO left by the failed import: $($GPMBackup.GPODisplayName)"
+                } catch { }
+            }
+        }
 
         # Migrate the ACLs, only for GPOs that were imported
         If ($CopyACL -and $Imported) {
@@ -725,6 +757,11 @@ Param (
         # try/catch as well: depending on the version, Get-GPO may throw when the GPO is missing
         $Existing = $null
         try { $Existing = Get-GPO -Domain $DestDomain -Server $DestServer -Name $GPMBackup.GPODisplayName -ErrorAction Stop } catch { }
+        # Never remove the two default GPOs; Import-GPO overwrites their settings instead
+        If ($Existing -and @('31b2f340-016d-11d2-945f-00c04fb984f9','6ac1786c-016f-11d2-945f-00c04fb984f9') -contains $Existing.Id.ToString()) {
+            Write-Host "Default GPO is kept, its settings will be overwritten: $($GPMBackup.GPODisplayName)"
+            Continue
+        }
         If (-not $Existing) {
             Write-Host "Not in domain ${DestDomain}, nothing to remove: $($GPMBackup.GPODisplayName)"
             Continue
@@ -775,6 +812,10 @@ Param (
     ForEach ($GPMBackup in $BackupList) {
 
         "`n`n$($GPMBackup.GPODisplayName)"
+        If ($script:GPOMigFailedImports -contains $GPMBackup.GPODisplayName) {
+            Write-Warning "Import failed, links not created: $($GPMBackup.GPODisplayName)"
+            Continue
+        }
 
         <#
         ID             : {2DA3E56D-061C-4CB7-95D8-DCA4D023ACF5}
@@ -895,6 +936,11 @@ Param (
         $BackupXML.Load($Backup.FullName)
         $GPODisplayName = $BackupXML.GroupPolicyBackupScheme.GroupPolicyObject.GroupPolicyCoreSettings.DisplayName."#cdata-section"
         $WMIFilterName = $BackupXML.GroupPolicyBackupScheme.GroupPolicyObject.GroupPolicyCoreSettings.WMIFilterName."#cdata-section"
+
+        If ($script:GPOMigFailedImports -contains $GPODisplayName) {
+            Write-Warning "Import failed, WMI filter not linked: $GPODisplayName"
+            Continue
+        }
 
         If ($WMIFilterName) {
             "Linking WMI filter '$WMIFilterName' to GPO '$GPODisplayName'."
@@ -1107,6 +1153,16 @@ Param (
     [Switch]
     $RemoveExisting  # Delete GPOs of the same name in the destination before import
 )
+    # Refuse to import a backup into the domain it was exported from
+    $SourceFile = Join-Path $BackupPath 'SourceDomain.csv'
+    If (Test-Path $SourceFile) {
+        $SourceSID = (Import-Csv $SourceFile -Encoding UTF8).DomainSID
+        If ($SourceSID -and $SourceSID -eq (Get-ADDomain -Server $DestServer).DomainSID.Value) {
+            Write-Error "This backup was exported from $DestDomain itself. Nothing was imported."
+            Return
+        }
+    }
+
     # Create the migration table
     # Capture the MigTablePath and MigTableCSVPath for use with subsequent cmdlets
     $MigTablePath = New-GPOMigrationTable -DestDomain $DestDomain -Path $Path -BackupPath $BackupPath -MigTableCSVPath $MigTableCSVPath
@@ -1135,7 +1191,7 @@ Param (
 
     # Import all from backup
     # This will fail for any policies that are missing migration table accounts in the destination domain.
-    Invoke-ImportGPO -DestDomain $DestDomain -DestServer $DestServer -BackupPath $BackupPath -MigTablePath $MigTablePath -CopyACL
+    Invoke-ImportGPO -DestDomain $DestDomain -DestServer $DestServer -BackupPath $BackupPath -MigTablePath $MigTablePath -CopyACL:$CopyACL
 
     # Import WMIFilters
     Import-WMIFilter -DestServer $DestServer -Path $BackupPath
