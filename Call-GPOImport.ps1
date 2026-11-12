@@ -61,9 +61,9 @@ Source,Destination,Type
 
 Modify the following to your needs:
  working folder path (the folder of this script by default)
- GPO backup folder path
- destination domains and servers
- MigTableCSV files
+ GPO backup folder path (the newest backup in the working folder by default)
+ destination domains and servers (the current domain and its PDC emulator by default)
+ MigTableCSV files (built from the source and destination domains by default)
 ##############################################################################>
 
 # Working folder: the folder of this script. When run as a selection in ISE,
@@ -80,14 +80,48 @@ Import-Module ".\GPOMigration" -Force
 
 # This path must be absolute, not relative
 $Path        = $PWD  # Current folder specified in Set-Location above
-$BackupPath  = "$PWD\GPO Backup wingtiptoys.local 2014-08-06-09-11-37"
+# Backup to import: the newest "GPO Backup ..." folder in the working folder.
+# To use another one: $BackupPath = "$PWD\GPO Backup wingtiptoys.local 2014-08-06-09-11-37"
+$BackupPath  = Get-ChildItem -Path $Path -Directory -Filter 'GPO Backup *' |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+If (-not $BackupPath) {
+    Write-Warning "No 'GPO Backup ...' folder in $Path. Copy the export here or set `$BackupPath."
+    Stop-Transcript
+    Return
+}
+"Backup: $BackupPath"
 
 ###############################################################################
 # IMPORT
 ###############################################################################
-$DestDomain  = 'cohovineyard.com'
-$DestServer  = 'cvdcr2.cohovineyard.com'
-$MigTableCSVPath = '.\MigTable_sample.csv'
+# Destination: the domain of this computer and its PDC emulator. Replace with
+# names to import into another domain, e.g.
+# $DestDomain = 'cohovineyard.com'; $DestServer = 'cvdcr2.cohovineyard.com'
+$DestDomain  = (Get-ADDomain).DNSRoot
+$DestServer  = (Get-ADDomain -Server $DestDomain).PDCEmulator
+"Destination: $DestDomain, server $DestServer"
+# Migration table CSV. Leave empty to build it from the source domain (saved in the
+# backup by the export) and the destination domain: FQDN and NetBIOS name.
+# Set a file name to use your own CSV, for example with UNC paths:
+# $MigTableCSVPath = '.\MigTable_sample.csv'
+$MigTableCSVPath = ''
+If (-not $MigTableCSVPath) {
+    $SourceFile = Join-Path $BackupPath 'SourceDomain.csv'
+    If (-not (Test-Path $SourceFile)) {
+        Write-Warning "No SourceDomain.csv in the backup (made by an older version). Set `$MigTableCSVPath to your CSV."
+        Stop-Transcript
+        Return
+    }
+    $Source = Import-Csv $SourceFile -Encoding UTF8
+    $Dest   = Get-ADDomain -Server $DestServer
+    $MigTableCSVPath = Join-Path $Path ("MigTable_{0}-to-{1}.csv" -f $Source.DNSRoot, $Dest.DNSRoot)
+    @(
+        [pscustomobject]@{Source = $Source.DNSRoot;     Destination = $Dest.DNSRoot;     Type = 'Domain'}
+        [pscustomobject]@{Source = $Source.NetBIOSName; Destination = $Dest.NetBIOSName; Type = 'Domain'}
+    ) | Export-Csv $MigTableCSVPath -NoTypeInformation -Encoding UTF8
+}
+"Migration table CSV: $MigTableCSVPath"
+Import-Csv $MigTableCSVPath | Format-Table -AutoSize | Out-String -Width 300
 
 # Check the migration table before anything is imported. This only writes a
 # .migtable file in the working folder; nothing changes in the destination yet.
