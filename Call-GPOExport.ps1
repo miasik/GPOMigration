@@ -76,7 +76,7 @@ $Path        = $PWD  # Current folder specified in Set-Location above
 # GPOs by default. Replace with names to export from another domain, e.g.
 # $SrceDomain = 'wingtiptoys.local'; $SrceServer = 'dca.wingtiptoys.local'
 # ('localhost' works too when this script runs on a DC of the source domain).
-$SrceDomain  = (Get-ADDomain).DNSRoot
+$SrceDomain  = (Get-ADDomain -Current LocalComputer).DNSRoot
 $SrceServer  = (Get-ADDomain -Server $SrceDomain).PDCEmulator
 
 # GPOs to export: all of them. Narrow it down if needed, e.g.

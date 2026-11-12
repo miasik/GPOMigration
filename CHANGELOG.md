@@ -6,6 +6,24 @@ Original repository: https://github.com/GoateePFE/GPOMigration
 
 ## [Unreleased] - planned as 1.2
 
+### Safety (from external reviews, 2026-11-12)
+- `Call-GPOExport.ps1`, `Call-GPOImport.ps1`: the default domain is the domain of this
+  computer (`Get-ADDomain -Current LocalComputer`). Without the parameter `Get-ADDomain`
+  returns the domain of the logged-on user, so a run under an admin forest account
+  would have targeted the admin forest.
+- `Start-GPOImport` and `Call-GPOImport.ps1` refuse to import a backup into the domain it
+  was exported from (compared by domain SID from `SourceDomain.csv`).
+- `Start-GPOImport` honors its `-CopyACL` switch; before, permissions were always copied.
+- `Invoke-ImportGPO -CopyACL` checks `GPPermissions.csv` before importing anything. Before,
+  an old-format file was found only after Apply had been removed from Authenticated Users
+  on every imported GPO, so none of them applied.
+- When `Import-GPO` fails, the empty GPO it created is removed, and `Import-GPLink` and
+  `Set-GPWMIFilterFromBackup` skip that GPO. Before, an empty GPO was linked with top priority.
+- `Invoke-RemoveGPO` (`-RemoveExisting`) never removes Default Domain Policy and Default
+  Domain Controllers Policy; their settings are overwritten by the import.
+- `Call-GPOImport.ps1` shows the GPMC check of the migration table (`Test-GPOMigrationTable`)
+  before asking for confirmation.
+
 ### Added
 - **Link order.** GPO backups do not keep the order of GPO links on an OU, so every
   imported link was put last and the order had to be fixed by hand. `Start-GPOExport`
