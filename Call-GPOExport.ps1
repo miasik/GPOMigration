@@ -52,13 +52,19 @@ two operations you will need to copy your working folder from one environment to
 the other.
 
 Modify the following to your needs:
- working folder path
+ working folder path (the folder of this script by default)
  source domain and server
  destination domain and server
  the GPO DisplayName Where criteria to target your policies for migration
 ##############################################################################>
 
-Set-Location C:\Users\Administrator\Documents\GPOMigrationWorkingFolder
+# Working folder: the folder of this script. When run as a selection in ISE,
+# $PSScriptRoot is empty and the current folder is used.
+$WorkingFolder = If ($PSScriptRoot) {$PSScriptRoot} Else {$PWD.Path}
+Set-Location $WorkingFolder
+
+# Log of this run in the working folder. *.log files are ignored by git.
+Start-Transcript -Path (Join-Path $WorkingFolder ("GPOExport_{0:yyyyMMdd-HHmmss}.log" -f (Get-Date)))
 
 Import-Module GroupPolicy
 Import-Module ActiveDirectory
@@ -77,7 +83,9 @@ Start-GPOExport `
     -SrceServer $SrceServer `
     -DisplayName $DisplayName `
     -Path $Path
-    
+
+Stop-Transcript
+
 ###############################################################################
 # END
 ###############################################################################
