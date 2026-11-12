@@ -36,6 +36,12 @@ of included script samples are subject to the terms specified
 at http://www.microsoft.com/info/cpyright.htm.
 ##########################################################################sdg#>
 
+<#
+Fork: https://github.com/miasik/GPOMigration
+Version 1.2. Modified by miasik, 2020-2026; all changes and their sources are
+listed in CHANGELOG.md. Requires Windows PowerShell 3.0 or later.
+#>
+
 
 #.ExternalHelp GPOMigration.psm1-help.xml
 function Invoke-BackupGPO {
@@ -1329,10 +1335,10 @@ either restarting the NTDS service or rebooting the server.
 
         # Restart the NTDS service. Use a reboot on older OS where the service does not exist.
         If (Get-Service NTDS -ErrorAction SilentlyContinue) {
-            Write-Warning "You must restart the Directory Service to coninue..."
+            Write-Warning "You must restart the Directory Service to continue..."
             Restart-Service NTDS -Confirm:$true
         } Else {
-            Write-Warning "You must reboot the server to coninue..."
+            Write-Warning "You must reboot the server to continue..."
             Restart-Computer localhost -Confirm:$true
         }
 

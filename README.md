@@ -8,9 +8,23 @@ This is a maintained fork of the GPOMigration module by **Ashley McGlone**
 [GoateePFE/GPOMigration](https://github.com/GoateePFE/GPOMigration), has not been
 updated since 2017.
 
-**What is different from the original** - fixes collected from reader comments
-on the original blog post. See [CHANGELOG.md](CHANGELOG.md) for details. Note
-that the handling of *Authenticated Users* permissions after import has changed.
+**What is different from the original** (version 1.2, see [CHANGELOG.md](CHANGELOG.md)):
+
+- works from a computer outside the source or destination domain, for example an admin forest;
+- GPO permissions are copied by SID: well-known principals as they are, built-in
+  groups by RID (whatever the OS language), other accounts through the migration table;
+- domain local groups, computer accounts and UNC paths are translated, case-insensitively;
+- the order of GPO links on the domain and OUs is restored;
+- names in any language survive the export (UTF-8);
+- safety checks: no import back into the source domain, a failed GPO import leaves
+  nothing behind, the default GPOs are never deleted;
+- `Call-GPOExport.ps1` and `Call-GPOImport.ps1` need no editing for a plain domain clone:
+  they use the current domain, the newest backup and build the migration table themselves,
+  log every run and ask for confirmation before importing.
+
+**Behavior changes** compared with the original: *Authenticated Users* keep only Read
+unless the source GPO had Apply; existing GPOs of the same name are not deleted unless
+`-RemoveExisting` is used; principals of other domains of the source forest are not copied.
 
 **Original articles** (the TechNet blog and TechNet Gallery are gone):
 
@@ -20,7 +34,8 @@ that the handling of *Authenticated Users* permissions after import has changed.
 **Known limitations**
 
 - Group Policy Preferences items are not translated by migration tables (a GPMC limitation).
-- The order of GPO links on an OU is not preserved on import.
+- GPO links to sites are not created.
+- Requires Windows PowerShell 3.0 or later, RSAT (GroupPolicy, ActiveDirectory) and GPMC.
 - Test in a lab before using against production domains.
 
 ---

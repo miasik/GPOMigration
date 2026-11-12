@@ -4,7 +4,16 @@ All notable changes to this fork are documented here.
 The original module was written by Ashley McGlone (Microsoft PFE, "GoateePFE").
 Original repository: https://github.com/GoateePFE/GPOMigration
 
-## [Unreleased] - planned as 1.2
+## [Unreleased]
+
+Nothing yet.
+
+## 1.2 - 2026-11-12
+
+**Testing.** Version 1.2 was used for a real domain clone into a new forest on
+2026-11-12: 116 GPOs, permissions by SID, migration table, link order. The fixes from
+the external reviews made the same day (sections *Safety* and *Fixed (from external
+reviews)* below) have been checked for syntax and with offline tests only.
 
 ### Safety (from external reviews, 2026-11-12)
 - `Call-GPOExport.ps1`, `Call-GPOImport.ps1`: the default domain is the domain of this
@@ -137,6 +146,9 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   cannot be imported with `-CopyACL`; export them again.
 
 ### Maintenance
+- Manifest: version 1.2, `PowerShellVersion = '3.0'`, description; the fork is no longer
+  listed as a Microsoft product. README describes the fork.
+- Typo "coninue" in `Enable-ADSystemOnlyChange` messages.
 - Added `AGENTS.md`: project rules and known pitfalls for AI coding assistants.
 - `Call-GPOExport.ps1`, `Call-GPOImport.ps1`: the working folder is the folder of
   the script instead of a hard-coded path; each run writes a log
