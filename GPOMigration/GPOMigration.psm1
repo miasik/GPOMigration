@@ -1012,15 +1012,15 @@ Param (
             Write-Warning "Link order: not found in the destination: $Target"
             Return  # next OU
         }
-        $DestNames = @($DestLinks | ForEach-Object DisplayName)
+        $DestNames = @($DestLinks | Select-Object -ExpandProperty DisplayName)
 
         # Source order, only for GPOs linked here in the destination too
         $Wanted = @($_.Group | Sort-Object {[int]$_.Order} |
             Where-Object {$_.GPOName -and $DestNames -contains $_.GPOName} |
-            ForEach-Object GPOName)
+            Select-Object -ExpandProperty GPOName)
 
         # Nothing to do if the destination already has this order
-        $Current = @($DestLinks | Sort-Object Order | Where-Object {$Wanted -contains $_.DisplayName} | ForEach-Object DisplayName)
+        $Current = @($DestLinks | Sort-Object Order | Where-Object {$Wanted -contains $_.DisplayName} | Select-Object -ExpandProperty DisplayName)
         If (($Wanted -join '|') -eq ($Current -join '|')) {
             Return
         }
