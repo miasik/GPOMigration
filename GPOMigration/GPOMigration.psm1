@@ -60,6 +60,9 @@ Param(
     [String]
     $Path # Base path where backup folder will be created
 )
+    # Full file system paths: GPMC (COM) resolves relative paths against the process
+    # folder, and a path on a share must not carry the PowerShell provider prefix.
+    $Path = (Resolve-Path -LiteralPath $Path).ProviderPath
     $BackupPath = Join-Path $Path "\GPO Backup $SrceDomain $(Get-Date -Format 'yyyy-MM-dd-HH-mm-ss')\"
     New-Item -Path $BackupPath -ItemType Directory -Force | Out-Null
     
@@ -240,10 +243,15 @@ Param (
     [String]
     $MigTableCSVPath
 )
+    # Full file system paths: GPMC (COM) resolves relative paths against the process
+    # folder, and a path on a share must not carry the PowerShell provider prefix.
+    $Path = (Resolve-Path -LiteralPath $Path).ProviderPath
+    $BackupPath = (Resolve-Path -LiteralPath $BackupPath).ProviderPath
+    $MigTableCSVPath = (Resolve-Path -LiteralPath $MigTableCSVPath).ProviderPath
         # Instead of manually editing multiple migration tables,
         # use a CSV template of search/replace values to update the
         # migration table by code.
-        $MigTableCSV = Import-CSV $MigTableCSVPath
+        $MigTableCSV = Import-CSV $MigTableCSVPath -Encoding UTF8
         $MigDomains  = $MigTableCSV | Where-Object {$_.Type -eq "Domain"}
         $MigUNCs     = $MigTableCSV | Where-Object {$_.Type -eq "UNC"}
 
@@ -282,9 +290,12 @@ Param (
                 # Search/replace UNC paths from CSV file (prefix match)
                 $Constants.EntryTypeUNCPath {
                     ForEach ($MigUNC in $MigUNCs) {
-                        $Pattern = '^' + [regex]::Escape($MigUNC.Source)
+                        # Whole path components only: \\fs\share must not match \\fs\share-old
+                        $UNCSource = $MigUNC.Source.TrimEnd('\')
+                        $UNCDest   = $MigUNC.Destination.TrimEnd('\')
+                        $Pattern = '^' + [regex]::Escape($UNCSource) + '(?=\\|$)'
                         If ($Entry.Source -match $Pattern) {
-                            $mt.UpdateDestination($Entry.Source, ($Entry.Source -replace $Pattern, $MigUNC.Destination.Replace('$','$$'))) | Out-Null
+                            $mt.UpdateDestination($Entry.Source, ($Entry.Source -replace $Pattern, $UNCDest.Replace('$','$$'))) | Out-Null
                             $Translated[$Entry.Source] = $true
                         }
                     }
@@ -295,7 +306,7 @@ Param (
                 # Universal groups are included: in some scenarios like a single-domain
                 # forest the Enterprise Admins group needs to be migrated.
                 ### Need to add logic to ignore it in other cases, as it may not always need to be translated.
-                {$Constants.EntryTypeUser, $Constants.EntryTypeGlobalGroup, $Constants.EntryTypeLocalGroup, $Constants.EntryTypeUniversalGroup, $Constants.EntryTypeUnknown -contains $_} {
+                {$Constants.EntryTypeUser, $Constants.EntryTypeComputer, $Constants.EntryTypeGlobalGroup, $Constants.EntryTypeLocalGroup, $Constants.EntryTypeUniversalGroup, $Constants.EntryTypeUnknown -contains $_} {
                     ForEach ($MigDomain in $MigDomains) {
                         $Suffix = '@' + [regex]::Escape($MigDomain.Source) + '$'
                         $Prefix = '^' + [regex]::Escape($MigDomain.Source) + '\\'
@@ -340,6 +351,9 @@ Param (
     [String]
     $Path # Path for migration table
 )
+    # Full file system paths: GPMC (COM) resolves relative paths against the process
+    # folder, and a path on a share must not carry the PowerShell provider prefix.
+    $Path = (Resolve-Path -LiteralPath $Path).ProviderPath
     $gpm = New-Object -ComObject GPMgmt.GPM
     $mt = $gpm.GetMigrationTable($Path)
 
@@ -378,6 +392,9 @@ Param (
     [String]
     $Path
 )
+    # Full file system paths: GPMC (COM) resolves relative paths against the process
+    # folder, and a path on a share must not carry the PowerShell provider prefix.
+    $Path = (Resolve-Path -LiteralPath $Path).ProviderPath
     $gpm = New-Object -ComObject GPMgmt.GPM
     $mt = $gpm.GetMigrationTable($Path)
     $mt.Validate().Status
@@ -405,6 +422,10 @@ Param (
     [Switch]
     $CopyACL
 )
+    # Full file system paths: GPMC (COM) resolves relative paths against the process
+    # folder, and a path on a share must not carry the PowerShell provider prefix.
+    $BackupPath = (Resolve-Path -LiteralPath $BackupPath).ProviderPath
+    $MigTablePath = (Resolve-Path -LiteralPath $MigTablePath).ProviderPath
     $gpm = New-Object -ComObject GPMgmt.GPM
     $Constants = $gpm.getConstants()
     $GPMBackupDir = $gpm.GetBackupDir($BackupPath)
@@ -555,7 +576,7 @@ Param (
             If ($ExistingWMIFilters | Where-Object {$_.'msWMI-Name' -eq $WMIFilter.'msWMI-Name'}) {
                 Write-Host "WMI filter already exists: $($WMIFilter."msWMI-Name")"
             } Else {
-                $msWMICreationDate = (Get-Date).ToUniversalTime().ToString("yyyyMMddhhmmss.ffffff-000")
+                $msWMICreationDate = (Get-Date).ToUniversalTime().ToString("yyyyMMddHHmmss.ffffff-000")
                 $WMIGUID = "{$([System.Guid]::NewGuid())}"
     
                 $Attr = @{
@@ -666,7 +687,7 @@ Param (
         Write-Warning "Cannot read the forest root domain of $DestDomain. Enterprise Admins and Schema Admins are mapped to $DestDomain."
     }
     # Groups that exist only in the forest root domain
-    $ForestRootRIDs = 498, 518, 519
+    $ForestRootRIDs = 498, 518, 519, 527  # 527: Enterprise Key Admins
 
     # The default AD: drive points at the domain of the logged-on user.
     # Map a drive to the destination DC so Set-Acl writes to the right domain.
@@ -786,6 +807,9 @@ Param (
     [String]
     $BackupPath
 )
+    # Full file system paths: GPMC (COM) resolves relative paths against the process
+    # folder, and a path on a share must not carry the PowerShell provider prefix.
+    $BackupPath = (Resolve-Path -LiteralPath $BackupPath).ProviderPath
     $gpm = New-Object -ComObject GPMgmt.GPM
     $Constants = $gpm.getConstants()
     $GPMBackupDir = $gpm.GetBackupDir($BackupPath)
@@ -850,13 +874,17 @@ Param (
     [String]
     $MigTableCSVPath # Path for migration table source for automatic migtable generation
 )
+    # Full file system paths: GPMC (COM) resolves relative paths against the process
+    # folder, and a path on a share must not carry the PowerShell provider prefix.
+    $BackupPath = (Resolve-Path -LiteralPath $BackupPath).ProviderPath
+    $MigTableCSVPath = (Resolve-Path -LiteralPath $MigTableCSVPath).ProviderPath
     $gpm = New-Object -ComObject GPMgmt.GPM
     $Constants = $gpm.getConstants()
     $GPMBackupDir = $gpm.GetBackupDir($BackupPath)
     $GPMSearchCriteria = $gpm.CreateSearchCriteria()
     $BackupList = $GPMBackupDir.SearchBackups($GPMSearchCriteria)
 
-    $MigTableCSV = Import-CSV $MigTableCSVPath
+    $MigTableCSV = Import-CSV $MigTableCSVPath -Encoding UTF8
     $MigDomains  = $MigTableCSV | Where-Object {$_.Type -eq "Domain"}        
 
     ForEach ($GPMBackup in $BackupList) {
@@ -960,6 +988,16 @@ Param (
 }
 
 
+Function ConvertTo-GPOMigLdapValue {
+<#
+.SYNOPSIS
+Escapes a value for an LDAP filter (RFC 4515): \ * ( ) and NUL.
+#>
+Param ([String]$Value)
+    $Value.Replace('\','\5c').Replace('*','\2a').Replace('(','\28').Replace(')','\29').Replace([string][char]0,'\00')
+}
+
+
 #.ExternalHelp GPOMigration.psm1-help.xml
 Function Set-GPWMIFilterFromBackup {
 Param (
@@ -995,7 +1033,7 @@ Param (
         If ($WMIFilterName) {
             "Linking WMI filter '$WMIFilterName' to GPO '$GPODisplayName'."
             $WMIFilter = Get-ADObject -SearchBase "CN=SOM,CN=WMIPolicy,$((Get-ADDomain -Server $DestServer).SystemsContainer)" `
-                -LDAPFilter "(&(objectClass=msWMI-Som)(msWMI-Name=$WMIFilterName))" `
+                -LDAPFilter "(&(objectClass=msWMI-Som)(msWMI-Name=$(ConvertTo-GPOMigLdapValue $WMIFilterName)))" `
                 -Server $DestServer
             If ($WMIFilter) {
                 Set-ADObject -Identity (Get-GPO -Name $GPODisplayName -Domain $DestDomain -Server $DestServer).Path `
@@ -1115,8 +1153,8 @@ Param (
             Where-Object {$_.GPOName -and $DestNames -contains $_.GPOName} |
             Select-Object -ExpandProperty GPOName)
 
-        # Nothing to do if the destination already has this order
-        $Current = @($DestLinks | Sort-Object Order | Where-Object {$Wanted -contains $_.DisplayName} | Select-Object -ExpandProperty DisplayName)
+        # Nothing to do if the imported links already come first, in the source order
+        $Current = @($DestLinks | Sort-Object Order | Select-Object -ExpandProperty DisplayName | Select-Object -First $Wanted.Count)
         If (($Wanted -join '|') -eq ($Current -join '|')) {
             Return
         }
@@ -1124,7 +1162,7 @@ Param (
         If ($PSCmdlet.ShouldProcess($Target, "Set link order: $($Wanted -join ', ')")) {
             # Setting positions 1..n in turn leaves earlier positions untouched
             For ($i = 0; $i -lt $Wanted.Count; $i++) {
-                Set-GPLink -Name $Wanted[$i] -Target $Target -Order ($i + 1) -Domain $DestDomain -Server $DestServer | Out-Null
+                Set-GPLink -Name $Wanted[$i] -Target $Target -Order ($i + 1) -Domain $DestDomain -Server $DestServer -Confirm:$false | Out-Null
             }
             "Link order set on ${Target}: $($Wanted -join ' > ')"
         }

@@ -87,6 +87,25 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   written to the destination GPO as explicit ACEs.
 - `Import-GPPermission`: the ACL of each GPO is written once instead of once per ACE.
 
+### Fixed (from external reviews, 2026-11-12)
+- Functions that hand paths to GPMC (COM) turn them into full file system paths first.
+  GPMC resolved a relative path against `C:\Windows\system32`, and a working folder on a
+  share gave a path with the PowerShell provider prefix. `Call-*.ps1` use the provider path.
+- UNC rules in the migration table match whole path components only (`\\fs\share` no
+  longer changes `\\fs\share-old`); a trailing backslash in the CSV does not matter.
+- `Call-GPOImport.ps1` adds UNC rules for the source domain (`\\fqdn`, `\\NETBIOS`) to the
+  migration table CSV it builds, so logon scripts and SYSVOL/NETLOGON paths are translated.
+- `Call-GPOImport.ps1` picks the newest backup by the export time in the folder name,
+  not by the folder date, which changes when the folder is copied.
+- WMI filter names are escaped in the LDAP filter: names with `(`, `)`, `*` or `\` failed.
+- Computer accounts (`NETBIOS\PC$`) are translated in the migration table too.
+- Enterprise Key Admins (RID 527) are mapped to the destination forest root.
+- `Set-GPLinkOrder` also fixes the order when a destination-only link sits between the
+  imported ones, and does not ask for confirmation on every link under `-Confirm`.
+- The migration table CSV is read as UTF-8 everywhere.
+- `Call-*.ps1` close the log in `finally`, also after an error.
+- `Import-WMIFilter`: the creation date used a 12-hour clock.
+
 ### Changed
 - **Behavior change - entries of other domains.** The 2020 fork change that set
   the destination domain on every `name@domain` entry now applies only to entries
