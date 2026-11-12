@@ -93,6 +93,7 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   cannot be imported with `-CopyACL`; export them again.
 
 ### Maintenance
+- Added `AGENTS.md`: project rules and known pitfalls for AI coding assistants.
 - `Call-GPOExport.ps1`, `Call-GPOImport.ps1`: the working folder is the folder of
   the script instead of a hard-coded path; each run writes a log
   (`GPOExport_<date>.log`, `GPOImport_<date>.log`) with `Start-Transcript`.
