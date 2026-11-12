@@ -73,20 +73,24 @@ Set-Location $WorkingFolder
 
 # Log of this run in the working folder. *.log files are ignored by git.
 Start-Transcript -Path (Join-Path $WorkingFolder ("GPOImport_{0:yyyyMMdd-HHmmss}.log" -f (Get-Date)))
+# Everything below runs inside try/finally, so the log is closed even after an error.
+# (The body is not indented to keep the history of this file readable.)
+try {
 
 Import-Module GroupPolicy
 Import-Module ActiveDirectory
 Import-Module ".\GPOMigration" -Force
 
 # This path must be absolute, not relative
-$Path        = $PWD  # Current folder specified in Set-Location above
-# Backup to import: the newest "GPO Backup ..." folder in the working folder.
-# To use another one: $BackupPath = "$PWD\GPO Backup wingtiptoys.local 2014-08-06-09-11-37"
+$Path        = (Get-Location).ProviderPath  # Current folder; ProviderPath also works on a share
+# Backup to import: the newest "GPO Backup ..." folder in the working folder, by the
+# export time in its name (the folder date changes when the folder is copied).
+# To use another one: $BackupPath = "$Path\GPO Backup wingtiptoys.local 2014-08-06-09-11-37"
 $BackupPath  = Get-ChildItem -Path $Path -Directory -Filter 'GPO Backup *' |
-    Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+    Sort-Object @{Expression = {If ($_.Name -match '(\d{4}(-\d{2}){5})$') {$Matches[1]} Else {''}}}, LastWriteTime -Descending |
+    Select-Object -First 1 -ExpandProperty FullName
 If (-not $BackupPath) {
     Write-Warning "No 'GPO Backup ...' folder in $Path. Copy the export here or set `$BackupPath."
-    Stop-Transcript
     Return
 }
 "Backup: $BackupPath"
@@ -106,11 +110,11 @@ $SourceFile = Join-Path $BackupPath 'SourceDomain.csv'
 If ((Test-Path $SourceFile) -and
     (Import-Csv $SourceFile -Encoding UTF8).DomainSID -eq (Get-ADDomain -Server $DestServer).DomainSID.Value) {
     Write-Warning "This backup was exported from $DestDomain itself. Run the import in the new domain."
-    Stop-Transcript
     Return
 }
 # Migration table CSV. Leave empty to build it from the source domain (saved in the
-# backup by the export) and the destination domain: FQDN and NetBIOS name.
+# backup by the export) and the destination domain: FQDN and NetBIOS name, both as
+# domains and as UNC paths (\\domain\NETLOGON, \\domain\SYSVOL, DFS namespaces).
 # Set a file name to use your own CSV, for example with UNC paths:
 # $MigTableCSVPath = '.\MigTable_sample.csv'
 $MigTableCSVPath = ''
@@ -118,7 +122,6 @@ If (-not $MigTableCSVPath) {
     $SourceFile = Join-Path $BackupPath 'SourceDomain.csv'
     If (-not (Test-Path $SourceFile)) {
         Write-Warning "No SourceDomain.csv in the backup (made by an older version). Set `$MigTableCSVPath to your CSV."
-        Stop-Transcript
         Return
     }
     $Source = Import-Csv $SourceFile -Encoding UTF8
@@ -127,10 +130,12 @@ If (-not $MigTableCSVPath) {
     @(
         [pscustomobject]@{Source = $Source.DNSRoot;     Destination = $Dest.DNSRoot;     Type = 'Domain'}
         [pscustomobject]@{Source = $Source.NetBIOSName; Destination = $Dest.NetBIOSName; Type = 'Domain'}
+        [pscustomobject]@{Source = "\\$($Source.DNSRoot)";     Destination = "\\$($Dest.DNSRoot)";     Type = 'UNC'}
+        [pscustomobject]@{Source = "\\$($Source.NetBIOSName)"; Destination = "\\$($Dest.NetBIOSName)"; Type = 'UNC'}
     ) | Export-Csv $MigTableCSVPath -NoTypeInformation -Encoding UTF8
 }
 "Migration table CSV: $MigTableCSVPath"
-Import-Csv $MigTableCSVPath | Format-Table -AutoSize | Out-String -Width 300
+Import-Csv $MigTableCSVPath -Encoding UTF8 | Format-Table -AutoSize | Out-String -Width 300
 
 # Check the migration table before anything is imported. This only writes a
 # .migtable file in the working folder; nothing changes in the destination yet.
@@ -141,7 +146,6 @@ Show-GPOMigrationTable -Path $MigTableCheck | Format-Table -AutoSize -Wrap | Out
 Test-GPOMigrationTable -Path $MigTableCheck | Format-List | Out-String -Width 300
 If ((Read-Host "Check the migration table above. Import into $DestDomain now? (y/n)") -ne 'y') {
     "Import cancelled."
-    Stop-Transcript
     Return
 }
 
@@ -154,7 +158,9 @@ Start-GPOImport `
     -MigTableCSVPath $MigTableCSVPath `
     -CopyACL
 
-Stop-Transcript
+} finally {
+    Stop-Transcript
+}
 
 
 

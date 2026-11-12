@@ -65,13 +65,16 @@ Set-Location $WorkingFolder
 
 # Log of this run in the working folder. *.log files are ignored by git.
 Start-Transcript -Path (Join-Path $WorkingFolder ("GPOExport_{0:yyyyMMdd-HHmmss}.log" -f (Get-Date)))
+# Everything below runs inside try/finally, so the log is closed even after an error.
+# (The body is not indented to keep the history of this file readable.)
+try {
 
 Import-Module GroupPolicy
 Import-Module ActiveDirectory
 Import-Module ".\GPOMigration" -Force
 
 # This path must be absolute, not relative
-$Path        = $PWD  # Current folder specified in Set-Location above
+$Path        = (Get-Location).ProviderPath  # Current folder; ProviderPath also works on a share
 # Source: the domain of this computer and its PDC emulator, where GPMC edits
 # GPOs by default. Replace with names to export from another domain, e.g.
 # $SrceDomain = 'wingtiptoys.local'; $SrceServer = 'dca.wingtiptoys.local'
@@ -88,7 +91,6 @@ $DisplayName = Get-GPO -All -Domain $SrceDomain -Server $SrceServer |
 "Source: $SrceDomain, server $SrceServer, GPOs selected: $(@($DisplayName).Count)"
 If (-not $DisplayName) {
     Write-Warning "No GPOs match the selection in $SrceDomain. Check the Where-Object filter above."
-    Stop-Transcript
     Return
 }
 
@@ -98,7 +100,9 @@ Start-GPOExport `
     -DisplayName $DisplayName `
     -Path $Path
 
-Stop-Transcript
+} finally {
+    Stop-Transcript
+}
 
 ###############################################################################
 # END
