@@ -60,13 +60,19 @@ Source,Destination,Type
 "\\foo\server","\\baz\server","UNC"
 
 Modify the following to your needs:
- working folder path
+ working folder path (the folder of this script by default)
  GPO backup folder path
  destination domains and servers
  MigTableCSV files
 ##############################################################################>
 
-Set-Location C:\Users\Administrator\Documents\GPOMigrationWorkingFolder
+# Working folder: the folder of this script. When run as a selection in ISE,
+# $PSScriptRoot is empty and the current folder is used.
+$WorkingFolder = If ($PSScriptRoot) {$PSScriptRoot} Else {$PWD.Path}
+Set-Location $WorkingFolder
+
+# Log of this run in the working folder. *.log files are ignored by git.
+Start-Transcript -Path (Join-Path $WorkingFolder ("GPOImport_{0:yyyyMMdd-HHmmss}.log" -f (Get-Date)))
 
 Import-Module GroupPolicy
 Import-Module ActiveDirectory
@@ -83,6 +89,17 @@ $DestDomain  = 'cohovineyard.com'
 $DestServer  = 'cvdcr2.cohovineyard.com'
 $MigTableCSVPath = '.\MigTable_sample.csv'
 
+# Check the migration table before anything is imported. This only writes a
+# .migtable file in the working folder; nothing changes in the destination yet.
+$MigTableCheck = New-GPOMigrationTable -DestDomain $DestDomain -Path $Path -BackupPath $BackupPath -MigTableCSVPath $MigTableCSVPath
+Show-GPOMigrationTable -Path $MigTableCheck | Format-Table -AutoSize -Wrap | Out-String -Width 300
+If ((Read-Host "Check the migration table above. Import into $DestDomain now? (y/n)") -ne 'y') {
+    "Import cancelled."
+    Stop-Transcript
+    Return
+}
+
+# Add -RemoveExisting to delete GPOs of the same name in the destination first
 Start-GPOImport `
     -DestDomain $DestDomain `
     -DestServer $DestServer `
@@ -90,6 +107,8 @@ Start-GPOImport `
     -BackupPath $BackupPath `
     -MigTableCSVPath $MigTableCSVPath `
     -CopyACL
+
+Stop-Transcript
 
 
 

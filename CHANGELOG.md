@@ -84,6 +84,11 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   cannot be imported with `-CopyACL`; export them again.
 
 ### Maintenance
+- `Call-GPOExport.ps1`, `Call-GPOImport.ps1`: the working folder is the folder of
+  the script instead of a hard-coded path; each run writes a log
+  (`GPOExport_<date>.log`, `GPOImport_<date>.log`) with `Start-Transcript`.
+  `Call-GPOImport.ps1` shows the migration table and asks for confirmation before
+  importing.
 - `Call-GPOExport.ps1`, `Call-GPOImport.ps1` and `GPOMigration.psd1` converted from
   UTF-16 to UTF-8 with BOM, like the module itself. Git and GitHub now show their
   changes line by line.
