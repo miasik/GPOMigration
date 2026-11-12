@@ -23,6 +23,13 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   Domain Controllers Policy; their settings are overwritten by the import.
 - `Call-GPOImport.ps1` shows the GPMC check of the migration table (`Test-GPOMigrationTable`)
   before asking for confirmation.
+- **Behavior change - principals of other domains of the source forest** are no longer
+  copied as is: the destination is a new forest. They are skipped with a warning.
+  Principals of other forests and trusted domains (an admin forest) are still copied
+  as is. `GPPermissions.csv` has a new column `SourceForestSIDs`; without it (a backup
+  made earlier today) such principals are kept as before.
+- A Deny entry that cannot be set is reported as `DENY NOT SET` and listed again at the
+  end of the import: without it the GPO may apply to accounts the source excluded.
 
 ### Added
 - **Link order.** GPO backups do not keep the order of GPO links on an OU, so every

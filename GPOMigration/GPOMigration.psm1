@@ -130,6 +130,22 @@ Param(
     Catch {
         Write-Warning "Cannot read the forest root domain of $SrceDomain. Enterprise Admins and Schema Admins may not be translated."
     }
+    # SIDs of all domains of the source forest. Import-GPPermission skips principals of
+    # these domains: the destination is a new forest, the old forest stays behind.
+    $SourceForestSIDs = @()
+    Try {
+        ForEach ($ForestDomain in (Get-ADForest -Server $SrceServer).Domains) {
+            Try {
+                $SourceForestSIDs += (Get-ADDomain -Server $ForestDomain).DomainSID.Value
+            }
+            Catch {
+                Write-Warning "Cannot read domain $ForestDomain of the source forest. Its principals will be kept as is."
+            }
+        }
+    }
+    Catch {
+        Write-Warning "Cannot read the domains of the source forest. Their principals will be kept as is."
+    }
 
     If ($All) {
         $DisplayName = Get-GPO -Server $SrceServer -Domain $SrceDomain -All |
@@ -172,6 +188,7 @@ Param(
                 SourceDomain          = $SrceDomain
                 SourceDomainSID       = $SourceDomainSID
                 SourceRootSID         = $SourceRootSID
+                SourceForestSIDs      = $SourceForestSIDs -join ';'
             })
         }
     }
@@ -416,6 +433,8 @@ Param (
 
     # GPOs whose import failed. Import-GPLink and Set-GPWMIFilterFromBackup skip them.
     $script:GPOMigFailedImports = @()
+    # Deny entries that could not be set (see Import-GPPermission)
+    $script:GPOMigDenySkipped = @()
 
     # AD drive on the destination DC, local to this function
     New-PSDrive -Name GPOMigDest -PSProvider ActiveDirectory -Root '//RootDSE/' -Server $DestServer | Out-Null
@@ -498,6 +517,11 @@ Param (
             Write-Warning "GPO was not imported, permissions not copied: $($GPMBackup.GPODisplayName)"
         } # End If CopyACL
     } # End ForEach GPMBackup
+
+    If ($script:GPOMigDenySkipped.Count) {
+        Write-Warning "DENY entries NOT SET: $($script:GPOMigDenySkipped.Count). These GPOs may apply to accounts the source excluded. Check them:"
+        $script:GPOMigDenySkipped | Format-Table -AutoSize -Wrap | Out-String -Width 300
+    }
 } # End Function
 
 
@@ -558,6 +582,23 @@ Param (
 }
 
 
+Function Write-GPOMigSkippedACE {
+<#
+.SYNOPSIS
+Reports an ACE that Import-GPPermission did not set. Deny entries get a louder
+warning and are collected for the summary at the end of Invoke-ImportGPO.
+#>
+Param ($ACE, [String]$GPOName, [String]$Reason)
+    If ($ACE.AccessControlType -eq 'Deny') {
+        Write-Warning "DENY NOT SET - the restriction is weaker than in the source: '$($ACE.IdentityReference)' on '$GPOName' ($Reason)"
+        $script:GPOMigDenySkipped += New-Object PSObject -Property ([ordered]@{
+            GPO = $GPOName; Principal = $ACE.IdentityReference; SID = $ACE.IdentitySID; Reason = $Reason })
+    } Else {
+        Write-Warning "ACE not set: '$($ACE.IdentityReference)' on '$GPOName' ($Reason)"
+    }
+}
+
+
 #.ExternalHelp GPOMigration.psm1-help.xml
 Function Import-GPPermission {
 Param (
@@ -590,10 +631,14 @@ Param (
        Domain Computers, Group Policy Creator Owners...) -> the same RID in the
        destination domain. Enterprise Admins, Schema Admins and Enterprise
        Read-only DCs -> the same RID in the destination forest root domain.
-    4. Principal of another domain or forest (trusted domain, admin forest)
-       -> the same SID, reported. The destination must trust that domain.
-    5. Anything else (an account of the source domain without a destination in
+    4. Principal of another domain of the SOURCE forest -> skipped with a warning:
+       the destination is a new forest. (Needs the SourceForestSIDs column.)
+    5. Principal of another forest or trusted domain (admin forest) -> the same
+       SID, reported. The destination must trust that domain.
+    6. Anything else (an account of the source domain without a destination in
        the migration table) -> skipped with a warning.
+    A Deny entry that is not set weakens a restriction. Such entries are reported
+    with a "DENY NOT SET" warning and listed again at the end of Invoke-ImportGPO.
     Names are never resolved without their domain: a bare name would resolve in
     the domain of the computer running this script.
     #>
@@ -671,7 +716,7 @@ Param (
                     $NewSid = $ADObject.SID
                     "  $($ACE.IdentityReference) -> $($MigID.Destination) (migration table)"
                 } Else {
-                    Write-Warning "Not found in the destination: '$($MigID.Destination)'. ACE not set: '$($ACE.IdentityReference)' on '$Name'"
+                    Write-GPOMigSkippedACE -ACE $ACE -GPOName $Name -Reason "not found in the destination: '$($MigID.Destination)'"
                     Continue
                 }
             }
@@ -690,15 +735,20 @@ Param (
                 $NewSid = New-Object System.Security.Principal.SecurityIdentifier "$DestDomainSID-$RID"
                 "  $($ACE.IdentityReference) -> RID $RID of $DestDomain"
             }
-            # 5. Account of the source domain without a destination in the migration table
+            # 6. Account of the source domain without a destination in the migration table
             ElseIf ($DomSid.Value -eq $ACE.SourceDomainSID) {
-                Write-Warning "No destination in the migration table. ACE not set: '$($ACE.IdentityReference)' on '$Name'"
+                Write-GPOMigSkippedACE -ACE $ACE -GPOName $Name -Reason 'no destination in the migration table'
                 Continue
             }
-            # 4. Principal of another domain or forest: keep as is
+            # 4. Principal of another domain of the source forest: skip
+            ElseIf ($ACE.SourceForestSIDs -and ($ACE.SourceForestSIDs -split ';') -contains $DomSid.Value) {
+                Write-GPOMigSkippedACE -ACE $ACE -GPOName $Name -Reason 'principal of another domain of the source forest'
+                Continue
+            }
+            # 5. Principal of another forest or trusted domain: keep as is
             Else {
                 $NewSid = $SrcSid
-                Write-Host "  $($ACE.IdentityReference) ($($ACE.IdentitySID)) -> kept as is (other domain or forest; $DestDomain must trust it)"
+                Write-Host "  $($ACE.IdentityReference) ($($ACE.IdentitySID)) -> kept as is (other forest or trusted domain; $DestDomain must trust it)"
             }
 
             $ObjectType = [GUID]$($ACE.ObjectType)
