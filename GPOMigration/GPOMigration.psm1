@@ -1064,6 +1064,11 @@ Param (
     # Dump the order of GPO links on the domain and OUs
     Export-GPLinkOrder -SrceDomain $SrceDomain -SrceServer $SrceServer -Path $BackupPath
 
+    # Dump the source domain names, so the import can build a migration table
+    Get-ADDomain -Server $SrceServer |
+        Select-Object DNSRoot, NetBIOSName, DistinguishedName, @{n='DomainSID';e={$_.DomainSID.Value}} |
+        Export-Csv (Join-Path $BackupPath 'SourceDomain.csv') -NoTypeInformation -Encoding UTF8
+
     # Dump the WMI filters
     # This is called from Invoke-BackupGPO
     #Export-WMIFilter -SrceServer $SrceServer -Path $BackupPath
