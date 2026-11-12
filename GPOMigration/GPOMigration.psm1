@@ -915,6 +915,127 @@ Param (
 }
 
 
+Function Export-GPLinkOrder {
+<#
+.SYNOPSIS
+Saves the order of GPO links on the domain root and on every OU of the source
+domain to GPLinks.csv. Fork addition (1.2).
+.DESCRIPTION
+GPO backups do not keep the link order: it lives in the gPLink attribute of each
+OU, where the last GPO in the list has link order 1. Set-GPLinkOrder uses this
+file to restore the same order in the destination domain. Sites are not included.
+Read-only for the source domain.
+#>
+Param (
+    [Parameter(Mandatory=$true)]
+    [String]
+    $SrceDomain,
+    [Parameter(Mandatory=$true)]
+    [String]
+    $SrceServer,
+    [Parameter(Mandatory=$true)]
+    [ValidateScript({Test-Path $_})]
+    [String]
+    $Path  # Backup folder; GPLinks.csv is written there
+)
+    $DomainDN = (Get-ADDomain -Server $SrceServer).DistinguishedName
+
+    # GPO names by GUID
+    $GPONames = @{}
+    Get-GPO -All -Domain $SrceDomain -Server $SrceServer | ForEach-Object { $GPONames[$_.Id.ToString()] = $_.DisplayName }
+
+    $Links = @()
+    Get-ADObject -Server $SrceServer -SearchBase $DomainDN -LDAPFilter '(gPLink=*)' -Properties gPLink |
+        ForEach-Object {
+            $SOM = $_.DistinguishedName
+            # Path relative to the domain root: empty for the domain itself
+            $Relative = If ($SOM -eq $DomainDN) {''} Else {$SOM.Substring(0, $SOM.Length - $DomainDN.Length - 1)}
+
+            $Entries = [regex]::Matches($_.gPLink, '\[LDAP://cn=\{([0-9a-f-]+)\},[^;\]]*;(\d+)\]', 'IgnoreCase')
+            $Count = $Entries.Count
+            For ($i = 0; $i -lt $Count; $i++) {
+                $Guid = $Entries[$i].Groups[1].Value.ToLower()
+                $Flags = [int]$Entries[$i].Groups[2].Value
+                $Links += New-Object PSObject -Property ([ordered]@{
+                    SOMRelative = $Relative
+                    GPOName     = $GPONames[$Guid]
+                    GPOGuid     = $Guid
+                    Order       = $Count - $i   # the last entry in gPLink has link order 1
+                    Enabled     = -not ($Flags -band 1)
+                    Enforced    = [bool]($Flags -band 2)
+                })
+            }
+        }
+
+    $Links | Export-Csv (Join-Path $Path 'GPLinks.csv') -NoTypeInformation -Encoding UTF8
+    "Saved the order of $($Links.Count) GPO links to GPLinks.csv"
+} # End Function
+
+
+Function Set-GPLinkOrder {
+<#
+.SYNOPSIS
+Puts GPO links on the domain root and on every OU of the destination domain in
+the order saved by Export-GPLinkOrder. Fork addition (1.2).
+.DESCRIPTION
+Only GPOs linked to the same OU in both domains are ordered, by their source
+order. Links that exist only in the destination stay below them. Only the order
+is changed, not the Enabled/Enforced state. Supports -WhatIf.
+#>
+[CmdletBinding(SupportsShouldProcess=$true)]
+Param (
+    [Parameter(Mandatory=$true)]
+    [String]
+    $DestDomain,
+    [Parameter(Mandatory=$true)]
+    [String]
+    $DestServer,
+    [Parameter(Mandatory=$true)]
+    [ValidateScript({Test-Path $_})]
+    [String]
+    $BackupPath  # Folder with GPLinks.csv
+)
+    $CsvPath = Join-Path $BackupPath 'GPLinks.csv'
+    If (-not (Test-Path $CsvPath)) {
+        Write-Warning "No GPLinks.csv in $BackupPath (backup made by an older version). Link order not restored."
+        Return
+    }
+    $DomainDN = (Get-ADDomain -Server $DestServer).DistinguishedName
+
+    Import-Csv $CsvPath -Encoding UTF8 | Group-Object SOMRelative | ForEach-Object {
+        $Target = If ($_.Name) {"$($_.Name),$DomainDN"} Else {$DomainDN}
+
+        Try {
+            $DestLinks = (Get-GPInheritance -Target $Target -Domain $DestDomain -Server $DestServer -ErrorAction Stop).GpoLinks
+        }
+        Catch {
+            Write-Warning "Link order: not found in the destination: $Target"
+            Return  # next OU
+        }
+        $DestNames = @($DestLinks | ForEach-Object DisplayName)
+
+        # Source order, only for GPOs linked here in the destination too
+        $Wanted = @($_.Group | Sort-Object {[int]$_.Order} |
+            Where-Object {$_.GPOName -and $DestNames -contains $_.GPOName} |
+            ForEach-Object GPOName)
+
+        # Nothing to do if the destination already has this order
+        $Current = @($DestLinks | Sort-Object Order | Where-Object {$Wanted -contains $_.DisplayName} | ForEach-Object DisplayName)
+        If (($Wanted -join '|') -eq ($Current -join '|')) {
+            Return
+        }
+
+        If ($PSCmdlet.ShouldProcess($Target, "Set link order: $($Wanted -join ', ')")) {
+            # Setting positions 1..n in turn leaves earlier positions untouched
+            For ($i = 0; $i -lt $Wanted.Count; $i++) {
+                Set-GPLink -Name $Wanted[$i] -Target $Target -Order ($i + 1) -Domain $DestDomain -Server $DestServer | Out-Null
+            }
+            "Link order set on ${Target}: $($Wanted -join ' > ')"
+        }
+    }
+} # End Function
+
+
 #.ExternalHelp GPOMigration.psm1-help.xml
 Function Start-GPOExport {
 Param (
@@ -939,6 +1060,9 @@ Param (
     
     # Dump the permissions
     Export-GPPermission -SrceDomain $SrceDomain -SrceServer $SrceServer -DisplayName $DisplayName -Path $BackupPath
+
+    # Dump the order of GPO links on the domain and OUs
+    Export-GPLinkOrder -SrceDomain $SrceDomain -SrceServer $SrceServer -Path $BackupPath
 
     # Dump the WMI filters
     # This is called from Invoke-BackupGPO
@@ -1017,6 +1141,9 @@ Param (
     # Link the GPOs to destination OUs of same path
     # The migration table CSV is used to remap the domain name portion of the OU distinguished name paths.
     Import-GPLink -DestDomain $DestDomain -DestServer $DestServer -BackupPath $BackupPath -MigTableCSVPath $MigTableCSVPath
+
+    # Put the links in the same order as in the source domain
+    Set-GPLinkOrder -DestDomain $DestDomain -DestServer $DestServer -BackupPath $BackupPath
 } # End Function
 
 

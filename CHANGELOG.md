@@ -6,6 +6,15 @@ Original repository: https://github.com/GoateePFE/GPOMigration
 
 ## [Unreleased] - planned as 1.2
 
+### Added
+- **Link order.** GPO backups do not keep the order of GPO links on an OU, so every
+  imported link was put last and the order had to be fixed by hand. `Start-GPOExport`
+  now saves the order on the domain root and on every OU to `GPLinks.csv`
+  (`Export-GPLinkOrder`), and `Start-GPOImport` restores it (`Set-GPLinkOrder`, supports
+  `-WhatIf`). Links that exist only in the destination stay below the imported ones.
+  Sites are not included. Both functions can be run on their own, for example to fix
+  the order after an import made with an older version.
+
 ### Fixed
 - Running from a computer outside the source or destination domain (for example,
   an admin forest). Several AD calls ignored `-SrceServer` / `-DestServer` and went
