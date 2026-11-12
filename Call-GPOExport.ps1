@@ -53,7 +53,7 @@ the other.
 
 Modify the following to your needs:
  working folder path (the folder of this script by default)
- source domain and server
+ source domain and server (the current domain and its PDC emulator by default)
  destination domain and server
  the GPO DisplayName Where criteria to target your policies for migration
 ##############################################################################>
@@ -72,11 +72,25 @@ Import-Module ".\GPOMigration" -Force
 
 # This path must be absolute, not relative
 $Path        = $PWD  # Current folder specified in Set-Location above
-$SrceDomain  = 'wingtiptoys.local'
-$SrceServer  = 'dca.wingtiptoys.local'
+# Source: the domain of this computer and its PDC emulator, where GPMC edits
+# GPOs by default. Replace with names to export from another domain, e.g.
+# $SrceDomain = 'wingtiptoys.local'; $SrceServer = 'dca.wingtiptoys.local'
+# ('localhost' works too when this script runs on a DC of the source domain).
+$SrceDomain  = (Get-ADDomain).DNSRoot
+$SrceServer  = (Get-ADDomain -Server $SrceDomain).PDCEmulator
+
+# GPOs to export: all of them. Narrow it down if needed, e.g.
+# Where-Object {$_.DisplayName -like '*test*'}
 $DisplayName = Get-GPO -All -Domain $SrceDomain -Server $SrceServer |
-    Where-Object {$_.DisplayName -like '*test*'} | 
+    Where-Object {$_.DisplayName -like '*'} |
     Select-Object -ExpandProperty DisplayName
+
+"Source: $SrceDomain, server $SrceServer, GPOs selected: $(@($DisplayName).Count)"
+If (-not $DisplayName) {
+    Write-Warning "No GPOs match the selection in $SrceDomain. Check the Where-Object filter above."
+    Stop-Transcript
+    Return
+}
 
 Start-GPOExport `
     -SrceDomain $SrceDomain `

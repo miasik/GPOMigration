@@ -98,6 +98,14 @@ Original repository: https://github.com/GoateePFE/GPOMigration
   (`GPOExport_<date>.log`, `GPOImport_<date>.log`) with `Start-Transcript`.
   `Call-GPOImport.ps1` shows the migration table and asks for confirmation before
   importing.
+- `Call-GPOExport.ps1`, `Call-GPOImport.ps1`: the source and destination default to the
+  domain of the computer running the script and its PDC emulator; the export selects
+  all GPOs instead of the sample filter `*test*` and stops with a clear message when
+  the selection is empty.
+- `Start-GPOExport` saves the source domain names (`SourceDomain.csv`: DNS name,
+  NetBIOS name, SID) in the backup. `Call-GPOImport.ps1` takes the newest backup in
+  the working folder and, unless a CSV is set, builds the migration table CSV from
+  the source and destination domains, so a plain domain clone needs no editing.
 - `Call-GPOExport.ps1`, `Call-GPOImport.ps1` and `GPOMigration.psd1` converted from
   UTF-16 to UTF-8 with BOM, like the module itself. Git and GitHub now show their
   changes line by line.
